@@ -326,9 +326,12 @@ async function runAsk(options) {
     ...download,
     path: download.path ? relocatePendingPath(pendingFiles, finalFilesDir, download.path) : null,
   }));
+  const savedLinkDownloads = linkDownloads.filter((download) => download.status === 'saved' && download.path);
+  const savedLinkPaths = new Set(savedLinkDownloads.map((download) => download.path));
+  const browserOnlyDownloads = browserDownloads.filter((download) => !savedLinkPaths.has(download));
   const finalDownloads = [
-    ...browserDownloads,
-    ...linkDownloads.filter((download) => download.status === 'saved' && download.path).map((download) => download.path),
+    ...browserOnlyDownloads,
+    ...savedLinkDownloads.map((download) => download.path),
   ];
   const extractedFiles = await extractDownloadedArchives(finalFilesDir);
   await writeMessageArtifacts(messageDir, {
@@ -337,7 +340,7 @@ async function runAsk(options) {
     reasoning: result.reasoning || '',
     links: result.links || [],
     downloads: [
-      ...browserDownloads,
+      ...browserOnlyDownloads,
       ...linkDownloads,
       ...(result.downloadErrors || []),
     ],

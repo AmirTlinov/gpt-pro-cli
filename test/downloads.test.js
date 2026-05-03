@@ -76,3 +76,106 @@ test('answer downloader scopes links to the current assistant answer and records
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test('answer downloader clicks filename-like assistant file controls', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-file-control-'));
+  const context = await browser.newContext({ acceptDownloads: true });
+  const page = await context.newPage();
+  try {
+    await page.setContent(`<!doctype html>
+      <main>
+        <div data-message-author-role="user">make downloadable file</div>
+        <div data-message-author-role="assistant">
+          <p>Done: cli-live-output.zip</p>
+          <button id="download-file" style="position:absolute; top:-1000px; left:0">cli-live-output.zip</button>
+        </div>
+        <script>
+          document.querySelector('#download-file').addEventListener('click', () => {
+            const blob = new Blob(['LIVE_GENERATED_FILE_OK'], { type: 'application/zip' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = 'cli-live-output.zip';
+            document.body.appendChild(link);
+            link.click();
+          });
+        </script>
+      </main>`);
+
+    const result = await downloadAnswerArtifacts(page, {
+      prompt: 'make downloadable file',
+      downloadDir: dir,
+      timeoutMs: 5000,
+      maxBytes: 1024 * 1024,
+    });
+
+    assert.equal(result.downloads.length, 1);
+    assert.equal(result.errors.length, 0);
+    assert.equal(result.downloads[0].label, 'cli-live-output.zip');
+    assert.match(result.downloads[0].path, /cli-live-output\.zip$/);
+    assert.equal(await fs.readFile(result.downloads[0].path, 'utf8'), 'LIVE_GENERATED_FILE_OK');
+  } finally {
+    await context.close();
+    await browser.close();
+  }
+});
+
+test('answer downloader follows file preview download actions', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-preview-download-'));
+  const context = await browser.newContext({ acceptDownloads: true });
+  const page = await context.newPage();
+  try {
+    await page.setContent(`<!doctype html>
+      <main>
+        <div data-message-author-role="user">make preview file</div>
+        <div data-message-author-role="assistant">
+          <button id="file-chip">report.zip</button>
+        </div>
+        <div id="preview"></div>
+        <script>
+          document.querySelector('#file-chip').addEventListener('click', () => {
+            document.querySelector('#preview').innerHTML = '<button id="real-download">Download</button>';
+            document.querySelector('#real-download').addEventListener('click', () => {
+              const blob = new Blob(['PREVIEW_DOWNLOAD_OK'], { type: 'application/zip' });
+              const link = document.createElement('a');
+              link.href = URL.createObjectURL(blob);
+              link.download = 'report.zip';
+              document.body.appendChild(link);
+              link.click();
+            });
+          });
+        </script>
+      </main>`);
+
+    const result = await downloadAnswerArtifacts(page, {
+      prompt: 'make preview file',
+      downloadDir: dir,
+      timeoutMs: 50,
+      maxBytes: 1024 * 1024,
+    });
+
+    assert.equal(result.downloads.length, 1);
+    assert.equal(result.errors.length, 0);
+    assert.equal(result.downloads[0].label, 'report.zip / Download');
+    assert.match(result.downloads[0].path, /report\.zip$/);
+    assert.equal(await fs.readFile(result.downloads[0].path, 'utf8'), 'PREVIEW_DOWNLOAD_OK');
+  } finally {
+    await context.close();
+    await browser.close();
+  }
+});

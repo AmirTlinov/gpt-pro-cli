@@ -2,8 +2,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { ensureDir, pathExists, sanitizeSlug } from './fsx.js';
 
-const DOWNLOAD_LABEL_RE = /download|скач|сохран/i;
-
 function extensionFromContentType(contentType) {
   const value = String(contentType || '').split(';')[0].trim().toLowerCase();
   const map = new Map([
@@ -62,6 +60,13 @@ async function uniqueTarget(dir, filename) {
     suffix += 1;
   }
   return candidate;
+}
+
+async function saveDownload(download, dir, fallbackName) {
+  const filename = cleanFilename(download.suggestedFilename(), fallbackName);
+  const target = await uniqueTarget(dir, filename);
+  await download.saveAs(target);
+  return target;
 }
 
 function answerSelectors() {
@@ -129,9 +134,65 @@ export async function extractAnswerLinks(page, prompt) {
   }, { expectedPrompt: prompt, assistantSelectors: answerSelectors() });
 }
 
-export async function clickAnswerDownloadControls(page, prompt, downloadDir) {
+async function clickFallbackDownloadAction(page, downloadDir, sourceLabel, timeoutMs) {
+  const actions = await page.evaluate(() => {
+    function visible(node) {
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    }
+
+    function normalized(value) {
+      return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+
+    const actions = [];
+    let index = 0;
+    for (const control of document.querySelectorAll('button,[role="button"],a[href]')) {
+      if (!visible(control) || control.hasAttribute('data-gpt-pro-download-id')) continue;
+      const label = normalized([
+        control.innerText || control.textContent,
+        control.getAttribute('aria-label'),
+        control.getAttribute('title'),
+        control.getAttribute('download'),
+      ].filter(Boolean).join(' '));
+      if (!/download|скач|сохран/i.test(label)) continue;
+      const id = `gpt-pro-fallback-download-${Date.now()}-${index}`;
+      index += 1;
+      control.setAttribute('data-gpt-pro-fallback-download-id', id);
+      actions.push({ id, label });
+    }
+    return actions;
+  });
+
+  for (const action of actions) {
+    try {
+      const [download] = await Promise.all([
+        page.waitForEvent('download', { timeout: timeoutMs }),
+        triggerControl(page, `[data-gpt-pro-fallback-download-id="${action.id}"]`),
+      ]);
+      const target = await saveDownload(download, downloadDir, `download-${Date.now()}`);
+      return { url: '', label: `${sourceLabel} / ${action.label}`, status: 'saved', path: target };
+    } catch {
+      // Try the next visible download action. The original control error remains the useful one.
+    }
+  }
+  return null;
+}
+
+async function triggerControl(page, selector) {
+  try {
+    await page.locator(selector).click({ force: true, timeout: 5000 });
+  } catch {
+    await page.evaluate((value) => {
+      document.querySelector(value)?.click();
+    }, selector);
+  }
+}
+
+export async function clickAnswerDownloadControls(page, prompt, downloadDir, options = {}) {
   await ensureDir(downloadDir);
-  const ids = await page.evaluate(({ expectedPrompt, assistantSelectors }) => {
+  const controls = await page.evaluate(({ expectedPrompt, assistantSelectors }) => {
     function visibleText(node) {
       const style = window.getComputedStyle(node);
       if (style.display === 'none' || style.visibility === 'hidden') return '';
@@ -155,37 +216,47 @@ export async function clickAnswerDownloadControls(page, prompt, downloadDir) {
     if (!anchor) return [];
 
     const assistantNodes = assistantSelectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)));
-    const ids = [];
+    const controls = [];
     let index = 0;
     for (const node of assistantNodes) {
       if (!(anchor.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
       for (const control of node.querySelectorAll('button,[role="button"]')) {
         if (!visible(control)) continue;
-        const label = normalized(control.innerText || control.textContent || control.getAttribute('aria-label'));
-        if (!/download|скач|сохран/i.test(label)) continue;
+        const label = normalized([
+          control.innerText || control.textContent,
+          control.getAttribute('aria-label'),
+          control.getAttribute('title'),
+        ].filter(Boolean).join(' '));
+        if (!/download|скач|сохран|\.(zip|pdf|txt|md|json|csv|xlsx|xls|docx|pptx|png|jpe?g|webp|gif|tgz|tar|gz)\b/i.test(label)) continue;
         const id = `gpt-pro-download-${Date.now()}-${index}`;
         index += 1;
         control.setAttribute('data-gpt-pro-download-id', id);
-        ids.push(id);
+        controls.push({ id, label });
       }
     }
-    return ids;
+    return controls;
   }, { expectedPrompt: prompt, assistantSelectors: answerSelectors() });
 
   const downloads = [];
   const errors = [];
-  for (const id of ids) {
+  const controlTimeoutMs = options.timeoutMs
+    ? Math.min(Math.max(options.timeoutMs, 100), 30_000)
+    : 10_000;
+  for (const { id, label } of controls) {
     try {
       const [download] = await Promise.all([
-        page.waitForEvent('download', { timeout: 3000 }),
-        page.locator(`[data-gpt-pro-download-id="${id}"]`).click({ force: true }),
+        page.waitForEvent('download', { timeout: controlTimeoutMs }),
+        triggerControl(page, `[data-gpt-pro-download-id="${id}"]`),
       ]);
-      const filename = cleanFilename(download.suggestedFilename(), `download-${downloads.length + 1}`);
-      const target = await uniqueTarget(downloadDir, filename);
-      await download.saveAs(target);
-      downloads.push({ url: '', label: 'download control', status: 'saved', path: target });
+      const target = await saveDownload(download, downloadDir, `download-${downloads.length + 1}`);
+      downloads.push({ url: '', label, status: 'saved', path: target });
     } catch (error) {
-      errors.push({ url: '', label: 'download control', status: 'failed', error: error.message });
+      const fallback = await clickFallbackDownloadAction(page, downloadDir, label, controlTimeoutMs);
+      if (fallback) {
+        downloads.push(fallback);
+        continue;
+      }
+      errors.push({ url: '', label, status: 'failed', error: error.message });
     }
   }
   return { downloads, errors };
@@ -249,7 +320,7 @@ export async function downloadAnswerLinks(page, links, downloadDir, options = {}
 export async function downloadAnswerArtifacts(page, { prompt, downloadDir, timeoutMs, maxBytes }) {
   const linksDir = path.join(downloadDir, 'links');
   const links = await extractAnswerLinks(page, prompt);
-  const controlResult = await clickAnswerDownloadControls(page, prompt, downloadDir);
+  const controlResult = await clickAnswerDownloadControls(page, prompt, downloadDir, { timeoutMs });
   const linkResult = await downloadAnswerLinks(page, links, linksDir, { timeoutMs, maxBytes });
   return {
     links,
