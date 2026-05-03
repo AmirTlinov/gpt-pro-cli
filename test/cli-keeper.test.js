@@ -15,6 +15,7 @@ function fakeChatGptServer() {
   let hasProject = false;
   const stableProjectId = 'g-p-69f7c0903ae88191b78a7ca2f00838e0';
   const projectId = `${stableProjectId}-cli-questions`;
+  const smokeSentinel = process.env.GPT_PRO_SMOKE_SENTINEL || 'GPT_PRO_SMOKE_FAKE';
   const html = (inProject = false) => `<!doctype html>
     <html>
       <body>
@@ -27,6 +28,7 @@ function fakeChatGptServer() {
         ${inProject ? `<a href="/g/${projectId}/c/fake-session">Fake Session</a>` : ''}
         <main>
           <div id="prompt-textarea" contenteditable="true" role="textbox"></div>
+          <input type="file" />
           <button data-testid="send-button">Send</button>
         </main>
         <div id="modal"></div>
@@ -49,7 +51,7 @@ function fakeChatGptServer() {
               history.pushState({}, '', '${inProject ? `/g/${projectId}/c/fake-session` : '/c/fake-session'}');
               const assistant = document.createElement('div');
               assistant.setAttribute('data-message-author-role', 'assistant');
-              assistant.textContent = 'CLI-E2E ' + prompt;
+              assistant.textContent = prompt.includes('proof.txt') ? '${smokeSentinel}' : 'CLI-E2E ' + prompt;
               document.body.appendChild(assistant);
             }, 50);
           });
@@ -82,6 +84,7 @@ test('CLI ask talks through keeper and stop cleans runtime file', async (t) => {
   }
 
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-e2e-'));
+  const smokeSentinel = 'GPT_PRO_SMOKE_FAKE';
   const { server, url } = await fakeChatGptServer();
   const env = {
     ...process.env,
@@ -110,6 +113,41 @@ test('CLI ask talks through keeper and stop cleans runtime file', async (t) => {
     const answerPath = stdout.match(/^answer: (.+)$/m)?.[1];
     assert.ok(answerPath);
     assert.match(await fs.readFile(answerPath, 'utf8'), /CLI-E2E nonce-keeper/);
+
+    const latest = await execFile(process.execPath, [
+      cliPath,
+      'ask',
+      '--session',
+      'latest',
+      '--timeout',
+      '8000',
+      '--',
+      'nonce-latest',
+    ], { env, timeout: 30_000 });
+    assert.match(latest.stdout, /\/g\/g-p-69f7c0903ae88191b78a7ca2f00838e0-cli-questions\/c\/fake-session/);
+
+    const smoke = await execFile(process.execPath, [
+      cliPath,
+      'smoke',
+      '--timeout',
+      '8000',
+    ], {
+      env: {
+        ...env,
+        GPT_PRO_SMOKE_SENTINEL: smokeSentinel,
+      },
+      timeout: 30_000,
+    });
+    assert.match(smoke.stdout, /^OK/m);
+
+    const archive = await execFile(process.execPath, [
+      cliPath,
+      'archive',
+    ], { env, timeout: 30_000 });
+    assert.match(archive.stdout, /^OK/m);
+    const archivePath = archive.stdout.match(/^archive: (.+)$/m)?.[1];
+    assert.ok(archivePath);
+    assert.equal(await pathExists(archivePath), true);
 
     const stop = await execFile(process.execPath, [cliPath, 'stop'], { env, timeout: 10_000 });
     assert.match(stop.stdout, /^OK/m);

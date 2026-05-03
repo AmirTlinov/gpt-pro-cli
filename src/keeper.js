@@ -7,11 +7,11 @@ import { spawn } from 'node:child_process';
 import { chromium } from 'playwright';
 import { paths, settings } from './config.js';
 import { ensureDir, writeJson } from './fsx.js';
+import { downloadAnswerArtifacts } from './downloads.js';
 import {
   downloadTarget,
   assistantMessageCount,
   extractLatestAnswer,
-  extractLinks,
   extractVisibleReasoning,
   openOrCreateProject,
   scrapeSessions,
@@ -243,13 +243,22 @@ async function handle(req, res) {
         });
         await Promise.allSettled(downloadSaves);
         const reasoning = await extractVisibleReasoning(page);
-        const links = await extractLinks(page);
+        const answerDownloads = body.downloadDir
+          ? await downloadAnswerArtifacts(page, {
+            prompt: body.prompt,
+            downloadDir: body.downloadDir,
+            timeoutMs: appSettings.downloadTimeoutMs,
+            maxBytes: appSettings.maxDownloadBytes,
+          })
+          : { links: [], downloads: [], errors: [] };
         return json(res, 200, {
           ok: true,
           answer,
           reasoning,
-          links,
+          links: answerDownloads.links.map((link) => link.url),
           downloads,
+          linkDownloads: answerDownloads.downloads,
+          downloadErrors: answerDownloads.errors,
           url: page.url(),
           project,
           elapsedMs: Date.now() - startedAt,

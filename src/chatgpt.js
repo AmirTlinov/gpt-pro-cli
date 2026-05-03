@@ -633,10 +633,19 @@ export async function scrapeSessions(page, projectUrl = '') {
 
     const seen = new Set();
     return Array.from(document.querySelectorAll('a[href*="/c/"]'))
-      .map((anchor) => ({
-        title: (anchor.innerText || anchor.textContent || '').trim() || 'Untitled',
-        url: anchor.href,
-      }))
+      .map((anchor) => {
+        const title = (anchor.innerText || anchor.textContent || '')
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean)[0] || anchor.getAttribute('aria-label') || 'Untitled';
+        const id = String(anchor.href || '').match(/\/c\/([a-zA-Z0-9-]+)/)?.[1] || '';
+        return {
+          title: title.replace(/\s+/g, ' ').trim().slice(0, 120) || 'Untitled',
+          id,
+          shortId: id.slice(0, 8),
+          url: anchor.href,
+        };
+      })
       .filter((item) => {
         if (!item.url || seen.has(item.url)) return false;
         if (targetProjectKey) {

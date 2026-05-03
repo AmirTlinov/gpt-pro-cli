@@ -4,7 +4,14 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import AdmZip from 'adm-zip';
-import { nextMessageDir, sessionSlugFromUrl } from '../src/artifacts.js';
+import {
+  archiveLocalChats,
+  nextMessageDir,
+  readSessionCache,
+  resolveSessionFromCache,
+  sessionSlugFromUrl,
+  writeSessionCache,
+} from '../src/artifacts.js';
 import { safeExtractZip, stageAttachment } from '../src/zip.js';
 
 async function tempHome() {
@@ -59,4 +66,41 @@ test('safe extraction blocks zip-slip and overwrites', async () => {
   await fs.mkdir(out, { recursive: true });
   await fs.writeFile(path.join(out, 'same.txt'), 'old');
   await assert.rejects(() => safeExtractZip(normalPath, out), /Refusing to overwrite/);
+});
+
+test('session cache resolves agent-friendly refs', async () => {
+  const home = await tempHome();
+  process.env.GPT_PRO_HOME = home;
+  const cache = await writeSessionCache('CLI_QUESTIONS', [
+    { title: 'Latest', url: 'https://chatgpt.com/g/g-p-demo/c/abcdef12-0000-0000-0000-000000000000' },
+    { title: 'Second', url: 'https://chatgpt.com/g/g-p-demo/c/bcdef123-0000-0000-0000-000000000000' },
+  ]);
+
+  assert.equal((await readSessionCache('CLI_QUESTIONS')).sessions.length, 2);
+  assert.equal(resolveSessionFromCache(cache, 'latest').shortId, 'abcdef12');
+  assert.equal(resolveSessionFromCache(cache, '2').shortId, 'bcdef123');
+  assert.equal(resolveSessionFromCache(cache, 'abcdef12').title, 'Latest');
+});
+
+test('archive includes local chats, project sessions, and manifest only', async () => {
+  const home = await tempHome();
+  process.env.GPT_PRO_HOME = home;
+  const messageDir = await nextMessageDir('abcdef12-0000-0000-0000-000000000000');
+  await fs.writeFile(path.join(messageDir, 'answer.md'), 'hello');
+
+  const result = await archiveLocalChats({
+    projectName: 'CLI_QUESTIONS',
+    sessionRef: 'all',
+    sessions: [
+      { title: 'Latest', id: 'abcdef12-0000-0000-0000-000000000000', shortId: 'abcdef12', url: 'https://chatgpt.com/g/g-p-demo/c/abcdef12-0000-0000-0000-000000000000' },
+    ],
+    warnings: [],
+  });
+
+  const archive = new AdmZip(result.path);
+  const entries = archive.getEntries().map((entry) => entry.entryName);
+  assert.ok(entries.includes('manifest.json'));
+  assert.ok(entries.includes('project-sessions.json'));
+  assert.ok(entries.includes('chats/abcdef12-0000-0000-0000-000000000000/message-1/answer.md'));
+  assert.equal(entries.some((entry) => entry.includes('browser-profile')), false);
 });

@@ -2,13 +2,19 @@
   "name": "gpt-pro-cli",
   "version": "0.1.0",
   "description": "Local CLI bridge for ChatGPT Pro web sessions.",
+  "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AmirTlinov/gpt-pro-cli.git"
+  },
   "bin": {
     "gpt-pro": "./src/cli.js"
   },
   "scripts": {
     "test": "node --test",
-    "smoke:doctor": "node ./src/cli.js doctor"
+    "smoke:doctor": "node ./src/cli.js doctor",
+    "smoke": "node ./src/cli.js smoke"
   },
   "dependencies": {
     "adm-zip": "^0.5.16",
