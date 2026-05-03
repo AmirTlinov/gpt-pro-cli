@@ -448,6 +448,7 @@ async function archive(argv) {
     `sessions: ${result.manifest.sessionsCount}`,
     `messages: ${result.manifest.messagesCount}`,
     `warnings: ${result.manifest.warnings.length}`,
+    ...result.manifest.warnings.slice(0, 5).map((warning) => `warning: ${warning}`),
   ].join('\n'));
 }
 

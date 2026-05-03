@@ -82,11 +82,17 @@ test('session cache resolves agent-friendly refs', async () => {
   assert.equal(resolveSessionFromCache(cache, 'abcdef12').title, 'Latest');
 });
 
-test('archive includes local chats, project sessions, and manifest only', async () => {
+test('archive includes project chats, project sessions, and manifest only', async () => {
   const home = await tempHome();
   process.env.GPT_PRO_HOME = home;
   const messageDir = await nextMessageDir('abcdef12-0000-0000-0000-000000000000');
   await fs.writeFile(path.join(messageDir, 'answer.md'), 'hello');
+  const localOnlyMessageDir = await nextMessageDir('local-only-project-session');
+  await fs.writeFile(path.join(localOnlyMessageDir, 'answer.md'), 'local project');
+  await fs.writeFile(path.join(localOnlyMessageDir, 'meta.json'), JSON.stringify({ project: 'CLI_QUESTIONS' }));
+  const oldMessageDir = await nextMessageDir('old-global-session');
+  await fs.writeFile(path.join(oldMessageDir, 'answer.md'), 'old');
+  await fs.writeFile(path.join(oldMessageDir, 'meta.json'), JSON.stringify({ project: 'GENERAL' }));
 
   const result = await archiveLocalChats({
     projectName: 'CLI_QUESTIONS',
@@ -102,5 +108,48 @@ test('archive includes local chats, project sessions, and manifest only', async 
   assert.ok(entries.includes('manifest.json'));
   assert.ok(entries.includes('project-sessions.json'));
   assert.ok(entries.includes('chats/abcdef12-0000-0000-0000-000000000000/message-1/answer.md'));
+  assert.ok(entries.includes('chats/local-only-project-session/message-1/answer.md'));
+  assert.equal(entries.some((entry) => entry.includes('old-global-session')), false);
   assert.equal(entries.some((entry) => entry.includes('browser-profile')), false);
+});
+
+test('archive does not guess all chats when project cache is empty', async () => {
+  const home = await tempHome();
+  process.env.GPT_PRO_HOME = home;
+  const messageDir = await nextMessageDir('old-global-session');
+  await fs.writeFile(path.join(messageDir, 'answer.md'), 'old');
+
+  const result = await archiveLocalChats({
+    projectName: 'CLI_QUESTIONS',
+    sessionRef: 'all',
+    sessions: [],
+    warnings: [],
+  });
+
+  const archive = new AdmZip(result.path);
+  const entries = archive.getEntries().map((entry) => entry.entryName);
+  assert.equal(result.manifest.sessionsCount, 0);
+  assert.equal(entries.some((entry) => entry.includes('old-global-session')), false);
+  assert.match(result.manifest.warnings.join('\n'), /no sessions found for project CLI_QUESTIONS/);
+});
+
+test('archive rejects explicit local session refs outside the project', async () => {
+  const home = await tempHome();
+  process.env.GPT_PRO_HOME = home;
+  const messageDir = await nextMessageDir('old-global-session');
+  await fs.writeFile(path.join(messageDir, 'answer.md'), 'old');
+  await fs.writeFile(path.join(messageDir, 'meta.json'), JSON.stringify({ project: 'GENERAL' }));
+
+  const result = await archiveLocalChats({
+    projectName: 'CLI_QUESTIONS',
+    sessionRef: 'old-global-session',
+    sessions: [],
+    warnings: [],
+  });
+
+  const archive = new AdmZip(result.path);
+  const entries = archive.getEntries().map((entry) => entry.entryName);
+  assert.equal(result.manifest.sessionsCount, 0);
+  assert.equal(entries.some((entry) => entry.includes('old-global-session')), false);
+  assert.match(result.manifest.warnings.join('\n'), /not known in project CLI_QUESTIONS/);
 });

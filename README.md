@@ -10,7 +10,13 @@ answer plus files on disk. It is a browser bridge, not an OpenAI API client.
 ## Install
 
 ```sh
-npm install -g github:AmirTlinov/gpt-pro-cli
+npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.1/gpt-pro-cli-0.1.1.tgz
+```
+
+Or install the same release from the Git tag:
+
+```sh
+npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.1
 ```
 
 For local development:
@@ -54,7 +60,8 @@ Each message contains `prompt.md`, `answer.md`, `meta.json`, uploaded
 attachments, downloaded answer links/files, and extracted zip contents when
 present.
 
-`gpt-pro archive` writes portable zip snapshots to:
+`gpt-pro archive` writes portable zip snapshots for the selected ChatGPT project
+to:
 
 ```text
 ~/gpt-pro/archives/

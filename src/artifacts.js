@@ -122,6 +122,90 @@ async function countMessages(sessionDir) {
   return entries.filter((entry) => entry.isDirectory() && /^message-\d+$/.test(entry.name)).length;
 }
 
+function uniqueSessionIds(sessions) {
+  const ids = [];
+  const seen = new Set();
+  for (const session of sessions || []) {
+    const id = session.id || sessionIdFromUrl(session.url);
+    if (!id) continue;
+    const safeId = sanitizeSlug(id, 'session');
+    if (seen.has(safeId)) continue;
+    seen.add(safeId);
+    ids.push(safeId);
+  }
+  return ids;
+}
+
+function pushUnique(ids, seen, id) {
+  if (!id) return;
+  const safeId = sanitizeSlug(id, 'session');
+  if (seen.has(safeId)) return;
+  seen.add(safeId);
+  ids.push(safeId);
+}
+
+async function localProjectSessionIds(projectName, chatsDir) {
+  const ids = [];
+  const seen = new Set();
+  const localSessionDirs = await fs.readdir(chatsDir, { withFileTypes: true }).catch(() => []);
+  for (const sessionEntry of localSessionDirs) {
+    if (!sessionEntry.isDirectory()) continue;
+    const sessionDir = path.join(chatsDir, sessionEntry.name);
+    const messageDirs = await fs.readdir(sessionDir, { withFileTypes: true }).catch(() => []);
+    for (const messageEntry of messageDirs) {
+      if (!messageEntry.isDirectory() || !/^message-\d+$/.test(messageEntry.name)) continue;
+      try {
+        const metaPath = path.join(sessionDir, messageEntry.name, 'meta.json');
+        const meta = JSON.parse(await fs.readFile(metaPath, 'utf8'));
+        if (meta.project === projectName) {
+          pushUnique(ids, seen, sessionEntry.name);
+          break;
+        }
+      } catch {
+        // Older local chats may not have metadata. They stay out unless the project cache names them.
+      }
+    }
+  }
+  return ids;
+}
+
+async function localSessionBelongsToProject(projectName, chatsDir, sessionId) {
+  const sessionDir = path.join(chatsDir, sanitizeSlug(sessionId, 'session'));
+  const messageDirs = await fs.readdir(sessionDir, { withFileTypes: true }).catch(() => []);
+  for (const messageEntry of messageDirs) {
+    if (!messageEntry.isDirectory() || !/^message-\d+$/.test(messageEntry.name)) continue;
+    try {
+      const metaPath = path.join(sessionDir, messageEntry.name, 'meta.json');
+      const meta = JSON.parse(await fs.readFile(metaPath, 'utf8'));
+      if (meta.project === projectName) return true;
+    } catch {
+      // Keep looking. A session can contain older messages before metadata existed.
+    }
+  }
+  return false;
+}
+
+function normalizedProjectUrlHint(projectName) {
+  return sanitizeSlug(projectName, 'project').toLowerCase().replace(/[._]+/g, '-');
+}
+
+function urlLooksLikeProjectSession(url, projectName) {
+  const value = String(url || '').toLowerCase();
+  const hint = normalizedProjectUrlHint(projectName);
+  return value.includes('/g/') && value.includes('/c/') && value.includes(hint);
+}
+
+function resolveArchiveSessionId(sessionRef, sessions) {
+  if (sessionRef === 'latest') return sessions[0]?.id || '';
+  const cached = resolveSessionFromCache({ sessions }, sessionRef);
+  if (cached?.id) return cached.id;
+  if (/^https?:\/\//.test(String(sessionRef || ''))) {
+    return sessionIdFromUrl(sessionRef) || sessionRef;
+  }
+  if (/^\d+$/.test(String(sessionRef || ''))) return '';
+  return sessionRef;
+}
+
 function archiveTimestamp(date = new Date()) {
   return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z').replace('T', '-').replace('Z', '');
 }
@@ -131,16 +215,30 @@ export async function archiveLocalChats({ projectName, sessionRef = 'all', sessi
   await ensureDir(rootPaths.archivesDir);
   const zip = new AdmZip();
   const selected = [];
-  const localSessionDirs = await fs.readdir(rootPaths.chatsDir, { withFileTypes: true }).catch(() => []);
-  const localIds = localSessionDirs.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
 
   if (sessionRef === 'all') {
-    selected.push(...localIds);
+    const seen = new Set();
+    for (const id of uniqueSessionIds(sessions)) pushUnique(selected, seen, id);
+    for (const id of await localProjectSessionIds(projectName, rootPaths.chatsDir)) pushUnique(selected, seen, id);
+    if (selected.length === 0) {
+      warnings.push(`no sessions found for project ${projectName}; run "gpt-pro sessions" after login`);
+    }
   } else {
-    const id = sessionRef === 'latest'
-      ? sessions[0]?.id
-      : resolveSessionFromCache({ sessions }, sessionRef)?.id || sessionRef;
-    if (id) selected.push(sanitizeSlug(id, 'session'));
+    const id = resolveArchiveSessionId(sessionRef, sessions);
+    if (id) {
+      const safeId = sanitizeSlug(id, 'session');
+      const cachedIds = new Set(uniqueSessionIds(sessions));
+      const isProjectSession = cachedIds.has(safeId)
+        || await localSessionBelongsToProject(projectName, rootPaths.chatsDir, safeId)
+        || urlLooksLikeProjectSession(sessionRef, projectName);
+      if (isProjectSession) {
+        selected.push(safeId);
+      } else {
+        warnings.push(`session ${sessionRef} is not known in project ${projectName}`);
+      }
+    } else {
+      warnings.push(`session ${sessionRef} was not found in cached project sessions`);
+    }
   }
 
   let messagesCount = 0;
