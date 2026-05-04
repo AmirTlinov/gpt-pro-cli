@@ -678,7 +678,18 @@ export async function submitPrompt(page, { prompt, attachmentPath, githubReposit
     element.scrollIntoView({ block: 'center', inline: 'nearest' });
     element.focus();
   });
-  const githubConnector = await attachGitHubRepositories(page, githubRepositories);
+  let githubConnector = { requested: githubRepositories, selected: [] };
+  try {
+    githubConnector = await attachGitHubRepositories(page, githubRepositories);
+  } catch (error) {
+    githubConnector = {
+      requested: githubRepositories,
+      selected: [],
+      uiSelection: 'unavailable',
+      error: error.message,
+      promptRequirement: 'sent',
+    };
+  }
   composer = await waitForComposer(page);
   await setComposerText(page, composer, prompt);
   await page.waitForTimeout(500);

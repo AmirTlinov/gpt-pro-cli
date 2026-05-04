@@ -424,6 +424,45 @@ test('GitHub connector selector opens tool menu, searches, and selects exact rep
   }
 });
 
+test('submitPrompt keeps going with prompt-required warning when GitHub UI selection is unavailable', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const page = await browser.newPage();
+  try {
+    await page.setContent(`
+      <main>
+        <div id="prompt-textarea" contenteditable="true" role="textbox"></div>
+        <button data-testid="send-button">Send</button>
+        <script>
+          document.querySelector('[data-testid="send-button"]').addEventListener('click', () => {
+            const prompt = document.querySelector('#prompt-textarea').textContent;
+            const user = document.createElement('div');
+            user.setAttribute('data-message-author-role', 'user');
+            user.textContent = prompt;
+            document.body.appendChild(user);
+          });
+        </script>
+      </main>
+    `);
+
+    const result = await submitPrompt(page, {
+      prompt: 'Use GitHub connector.\nQuestion: hello',
+      githubRepositories: ['AmirTlinov/gpt-pro-cli'],
+    });
+    assert.equal(result.githubConnector.uiSelection, 'unavailable');
+    assert.deepEqual(result.githubConnector.requested, ['AmirTlinov/gpt-pro-cli']);
+    assert.equal(await waitForUserPromptVisible(page, 'Use GitHub connector. Question: hello', 1000), true);
+  } finally {
+    await browser.close();
+  }
+});
+
 test('auth detection rejects anonymous composer with login actions', async (t) => {
   let browser;
   try {

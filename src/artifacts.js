@@ -96,6 +96,7 @@ function receiptWarnings(data) {
     for (const repository of meta.githubRepositories) {
       if (!selected.has(repository)) warnings.push(`GitHub connector did not report selected repository: ${repository}`);
     }
+    if (meta.githubConnector?.error) warnings.push(`GitHub connector UI selection failed: ${meta.githubConnector.error}`);
   }
   if (!meta.project) warnings.push('project is missing in metadata');
   if (!meta.sessionUrl) warnings.push('session URL is missing in metadata');

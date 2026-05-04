@@ -10,13 +10,13 @@ answer plus files on disk. It is a browser bridge, not an OpenAI API client.
 ## Install
 
 ```sh
-npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.9/gpt-pro-cli-0.1.9.tgz
+npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.10/gpt-pro-cli-0.1.10.tgz
 ```
 
 Or install the same release from the Git tag:
 
 ```sh
-npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.9
+npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.10
 ```
 
 For local development:
@@ -74,9 +74,10 @@ repositories in `meta.json` and `receipt.json`.
 gpt-pro ask --github-repo AmirTlinov/gpt-pro-cli -- "Find the risky parts of the current CLI design"
 ```
 
-The repository must already be visible/indexed in ChatGPT's GitHub connector.
-If the connector control or repository is unavailable, the command fails instead
-of pretending that GPT PRO saw the repo.
+The repository should already be visible/indexed in ChatGPT's GitHub connector.
+If ChatGPT's connector UI cannot be selected reliably, the CLI still sends the
+connector-required prompt but records a warning in `receipt.json`. Treat that as
+"prompt-enforced, UI selection unconfirmed", not as silent success.
 
 ## Files
 
