@@ -229,7 +229,8 @@ function uniqueSessionIds(sessions) {
   for (const session of sessions || []) {
     const id = session.id || sessionIdFromUrl(session.url);
     if (!id) continue;
-    const safeId = sanitizeSlug(id, 'session');
+    const safeId = safeSessionId(id);
+    if (!safeId) continue;
     if (seen.has(safeId)) continue;
     seen.add(safeId);
     ids.push(safeId);
@@ -237,12 +238,35 @@ function uniqueSessionIds(sessions) {
   return ids;
 }
 
+function safeSessionId(value) {
+  const safeId = sanitizeSlug(value, 'session');
+  if (safeId === '.' || safeId === '..') return null;
+  return safeId;
+}
+
+function localSessionChild(chatsDir, id) {
+  const safeId = safeSessionId(id);
+  if (!safeId) return null;
+  const root = path.resolve(chatsDir);
+  const sessionDir = path.resolve(root, safeId);
+  if (path.dirname(sessionDir) !== root) return null;
+  return { id: safeId, dir: sessionDir };
+}
+
 function pushUnique(ids, seen, id) {
   if (!id) return;
-  const safeId = sanitizeSlug(id, 'session');
+  const safeId = safeSessionId(id);
+  if (!safeId) return;
   if (seen.has(safeId)) return;
   seen.add(safeId);
   ids.push(safeId);
+}
+
+function pushUniqueSelected(selected, seen, id, deleteLocalAllowed) {
+  const safeId = safeSessionId(id);
+  if (!safeId || seen.has(safeId)) return;
+  seen.add(safeId);
+  selected.push({ id: safeId, deleteLocalAllowed });
 }
 
 async function localProjectSessionIds(projectName, chatsDir) {
@@ -270,20 +294,23 @@ async function localProjectSessionIds(projectName, chatsDir) {
   return ids;
 }
 
-async function localSessionBelongsToProject(projectName, chatsDir, sessionId) {
-  const sessionDir = path.join(chatsDir, sanitizeSlug(sessionId, 'session'));
-  const messageDirs = await fs.readdir(sessionDir, { withFileTypes: true }).catch(() => []);
+async function localSessionProjectState(projectName, chatsDir, sessionId) {
+  const target = localSessionChild(chatsDir, sessionId);
+  if (!target) return 'unsafe';
+  const messageDirs = await fs.readdir(target.dir, { withFileTypes: true }).catch(() => []);
+  let sawDifferentProject = false;
   for (const messageEntry of messageDirs) {
     if (!messageEntry.isDirectory() || !/^message-\d+$/.test(messageEntry.name)) continue;
     try {
-      const metaPath = path.join(sessionDir, messageEntry.name, 'meta.json');
+      const metaPath = path.join(target.dir, messageEntry.name, 'meta.json');
       const meta = JSON.parse(await fs.readFile(metaPath, 'utf8'));
-      if (meta.project === projectName) return true;
+      if (meta.project === projectName) return 'belongs';
+      if (meta.project) sawDifferentProject = true;
     } catch {
-      // Keep looking. A session can contain older messages before metadata existed.
+      // Older local chats may not have metadata. They are unknown, not proof.
     }
   }
-  return false;
+  return sawDifferentProject ? 'different' : 'unknown';
 }
 
 function normalizedProjectUrlHint(projectName) {
@@ -320,14 +347,33 @@ function setJsonFile(zip, name, value) {
   }
 }
 
-async function deleteArchivedLocalSessions(chatsDir, archivedSessions, warnings) {
+async function deleteArchivedLocalSessions(projectName, chatsDir, archivedSessions, warnings) {
   const deletedSessions = [];
   const failedSessions = [];
+  const skippedSessions = [];
   for (const session of archivedSessions) {
-    const id = sanitizeSlug(session.id, 'session');
-    const sessionDir = path.join(chatsDir, id);
+    const target = localSessionChild(chatsDir, session.id);
+    const id = target?.id || String(session.id || '');
+    if (!target) {
+      const failure = { id, error: 'unsafe local session id' };
+      failedSessions.push(failure);
+      warnings.push(`failed to delete local session ${id}: unsafe local session id`);
+      continue;
+    }
+    if (session.deleteLocalAllowed === false) {
+      const skipped = { id, reason: 'project membership is inferred from URL only' };
+      skippedSessions.push(skipped);
+      warnings.push(`skipped local deletion for session ${id}: project membership is inferred from URL only`);
+      continue;
+    }
+    if (await localSessionProjectState(projectName, chatsDir, id) === 'different') {
+      const skipped = { id, reason: `local metadata belongs to a different project than ${projectName}` };
+      skippedSessions.push(skipped);
+      warnings.push(`skipped local deletion for session ${id}: local metadata belongs to a different project than ${projectName}`);
+      continue;
+    }
     try {
-      await fs.rm(sessionDir, { recursive: true, force: false });
+      await fs.rm(target.dir, { recursive: true, force: false });
       deletedSessions.push(id);
     } catch (error) {
       const failure = { id, error: error.message };
@@ -335,7 +381,7 @@ async function deleteArchivedLocalSessions(chatsDir, archivedSessions, warnings)
       warnings.push(`failed to delete local session ${id}: ${error.message}`);
     }
   }
-  return { deletedSessions, failedSessions };
+  return { deletedSessions, failedSessions, skippedSessions };
 }
 
 export async function archiveLocalChats({
@@ -352,23 +398,37 @@ export async function archiveLocalChats({
 
   if (sessionRef === 'all') {
     const seen = new Set();
-    for (const id of uniqueSessionIds(sessions)) pushUnique(selected, seen, id);
-    for (const id of await localProjectSessionIds(projectName, rootPaths.chatsDir)) pushUnique(selected, seen, id);
+    for (const id of uniqueSessionIds(sessions)) {
+      if (await localSessionProjectState(projectName, rootPaths.chatsDir, id) === 'different') {
+        warnings.push(`session ${id} has local metadata for a different project than ${projectName}; skipped`);
+        continue;
+      }
+      pushUniqueSelected(selected, seen, id, true);
+    }
+    for (const id of await localProjectSessionIds(projectName, rootPaths.chatsDir)) {
+      pushUniqueSelected(selected, seen, id, true);
+    }
     if (selected.length === 0) {
       warnings.push(`no sessions found for project ${projectName}; run "gpt-pro sessions" after login`);
     }
   } else {
     const id = resolveArchiveSessionId(sessionRef, sessions);
     if (id) {
-      const safeId = sanitizeSlug(id, 'session');
-      const cachedIds = new Set(uniqueSessionIds(sessions));
-      const isProjectSession = cachedIds.has(safeId)
-        || await localSessionBelongsToProject(projectName, rootPaths.chatsDir, safeId)
-        || urlLooksLikeProjectSession(sessionRef, projectName);
-      if (isProjectSession) {
-        selected.push(safeId);
+      const safeId = safeSessionId(id);
+      if (!safeId) {
+        warnings.push(`session ${sessionRef} has an unsafe local session id`);
       } else {
-        warnings.push(`session ${sessionRef} is not known in project ${projectName}`);
+        const cachedIds = new Set(uniqueSessionIds(sessions));
+        const projectState = await localSessionProjectState(projectName, rootPaths.chatsDir, safeId);
+        if (projectState === 'different') {
+          warnings.push(`session ${sessionRef} is not known in project ${projectName}`);
+        } else if (cachedIds.has(safeId) || projectState === 'belongs') {
+          selected.push({ id: safeId, deleteLocalAllowed: true });
+        } else if (urlLooksLikeProjectSession(sessionRef, projectName)) {
+          selected.push({ id: safeId, deleteLocalAllowed: false });
+        } else {
+          warnings.push(`session ${sessionRef} is not known in project ${projectName}`);
+        }
       }
     } else {
       warnings.push(`session ${sessionRef} was not found in cached project sessions`);
@@ -377,16 +437,20 @@ export async function archiveLocalChats({
 
   let messagesCount = 0;
   const archivedSessions = [];
-  for (const id of selected) {
-    const sessionDir = path.join(rootPaths.chatsDir, id);
-    const messages = await countMessages(sessionDir);
+  for (const session of selected) {
+    const target = localSessionChild(rootPaths.chatsDir, session.id);
+    if (!target) {
+      warnings.push(`session ${session.id} has an unsafe local session id`);
+      continue;
+    }
+    const messages = await countMessages(target.dir);
     if (messages === 0) {
-      warnings.push(`no local messages for session ${id}`);
+      warnings.push(`no local messages for session ${target.id}`);
       continue;
     }
     messagesCount += messages;
-    archivedSessions.push({ id, messages });
-    await addDirToArchive(zip, sessionDir, sessionDir, `chats/${id}`);
+    archivedSessions.push({ id: target.id, messages, deleteLocalAllowed: session.deleteLocalAllowed });
+    await addDirToArchive(zip, target.dir, target.dir, `chats/${target.id}`);
   }
 
   const manifest = {
@@ -400,6 +464,7 @@ export async function archiveLocalChats({
       requested: Boolean(deleteLocal),
       deletedSessions: [],
       failedSessions: [],
+      skippedSessions: [],
       protectedScope: 'only archived local chat directories under ~/gpt-pro/chats',
     },
     warnings,
@@ -410,7 +475,7 @@ export async function archiveLocalChats({
   const archivePath = path.join(rootPaths.archivesDir, `gpt-pro-${sanitizeSlug(projectName, 'project')}-${archiveTimestamp()}.zip`);
   zip.writeZip(archivePath);
   if (deleteLocal && archivedSessions.length > 0) {
-    const deletion = await deleteArchivedLocalSessions(rootPaths.chatsDir, archivedSessions, warnings);
+    const deletion = await deleteArchivedLocalSessions(projectName, rootPaths.chatsDir, archivedSessions, warnings);
     manifest.localDeletion = {
       ...manifest.localDeletion,
       ...deletion,

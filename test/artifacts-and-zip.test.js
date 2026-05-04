@@ -264,3 +264,98 @@ test('archive rejects explicit local session refs outside the project', async ()
   assert.equal(entries.some((entry) => entry.includes('old-global-session')), false);
   assert.match(result.manifest.warnings.join('\n'), /not known in project CLI_QUESTIONS/);
 });
+
+test('archive delete-local does not trust a project-looking URL over negative local metadata', async () => {
+  const home = await tempHome();
+  process.env.GPT_PRO_HOME = home;
+  const messageDir = await nextMessageDir('old-global-session');
+  await fs.writeFile(path.join(messageDir, 'answer.md'), 'old');
+  await fs.writeFile(path.join(messageDir, 'meta.json'), JSON.stringify({ project: 'GENERAL' }));
+
+  const result = await archiveLocalChats({
+    projectName: 'CLI_QUESTIONS',
+    sessionRef: 'https://chatgpt.com/g/cli-questions/c/old-global-session',
+    sessions: [],
+    warnings: [],
+    deleteLocal: true,
+  });
+
+  const archive = new AdmZip(result.path);
+  const entries = archive.getEntries().map((entry) => entry.entryName);
+  assert.equal(result.manifest.sessionsCount, 0);
+  assert.deepEqual(result.manifest.localDeletion.deletedSessions, []);
+  assert.equal(await exists(path.join(home, 'chats', 'old-global-session')), true);
+  assert.equal(entries.some((entry) => entry.includes('old-global-session')), false);
+  assert.match(result.manifest.warnings.join('\n'), /not known in project CLI_QUESTIONS/);
+});
+
+test('archive delete-local lets negative local metadata veto stale cached sessions', async () => {
+  const home = await tempHome();
+  process.env.GPT_PRO_HOME = home;
+  const messageDir = await nextMessageDir('old-global-session');
+  await fs.writeFile(path.join(messageDir, 'answer.md'), 'old');
+  await fs.writeFile(path.join(messageDir, 'meta.json'), JSON.stringify({ project: 'GENERAL' }));
+
+  const result = await archiveLocalChats({
+    projectName: 'CLI_QUESTIONS',
+    sessionRef: 'all',
+    sessions: [
+      { title: 'Stale', id: 'old-global-session', shortId: 'old-glob', url: 'https://chatgpt.com/g/cli-questions/c/old-global-session' },
+    ],
+    warnings: [],
+    deleteLocal: true,
+  });
+
+  const archive = new AdmZip(result.path);
+  const entries = archive.getEntries().map((entry) => entry.entryName);
+  assert.equal(result.manifest.sessionsCount, 0);
+  assert.deepEqual(result.manifest.localDeletion.deletedSessions, []);
+  assert.equal(await exists(path.join(home, 'chats', 'old-global-session')), true);
+  assert.equal(entries.some((entry) => entry.includes('old-global-session')), false);
+  assert.match(result.manifest.warnings.join('\n'), /local metadata for a different project/);
+});
+
+test('archive delete-local keeps URL-inferred sessions local unless project ownership is proven', async () => {
+  const home = await tempHome();
+  process.env.GPT_PRO_HOME = home;
+  const messageDir = await nextMessageDir('url-only-session');
+  await fs.writeFile(path.join(messageDir, 'answer.md'), 'url only');
+
+  const result = await archiveLocalChats({
+    projectName: 'CLI_QUESTIONS',
+    sessionRef: 'https://chatgpt.com/g/cli-questions/c/url-only-session',
+    sessions: [],
+    warnings: [],
+    deleteLocal: true,
+  });
+
+  const archive = new AdmZip(result.path);
+  const entries = archive.getEntries().map((entry) => entry.entryName);
+  assert.equal(result.manifest.sessionsCount, 1);
+  assert.ok(entries.includes('chats/url-only-session/message-1/answer.md'));
+  assert.deepEqual(result.manifest.localDeletion.deletedSessions, []);
+  assert.deepEqual(result.manifest.localDeletion.skippedSessions, [
+    { id: 'url-only-session', reason: 'project membership is inferred from URL only' },
+  ]);
+  assert.equal(await exists(path.join(home, 'chats', 'url-only-session')), true);
+  assert.match(result.manifest.warnings.join('\n'), /skipped local deletion/);
+});
+
+test('archive delete-local rejects dot-dot session refs before filesystem access', async () => {
+  const home = await tempHome();
+  process.env.GPT_PRO_HOME = home;
+
+  const result = await archiveLocalChats({
+    projectName: 'CLI_QUESTIONS',
+    sessionRef: '..',
+    sessions: [],
+    warnings: [],
+    deleteLocal: true,
+  });
+
+  assert.equal(result.manifest.sessionsCount, 0);
+  assert.deepEqual(result.manifest.localDeletion.deletedSessions, []);
+  assert.equal(await exists(home), true);
+  assert.equal(await exists(path.join(home, 'archives')), true);
+  assert.match(result.manifest.warnings.join('\n'), /unsafe local session id/);
+});
