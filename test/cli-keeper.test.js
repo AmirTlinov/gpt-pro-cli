@@ -149,11 +149,14 @@ test('CLI ask talks through keeper and stop cleans runtime file', async (t) => {
     const archive = await execFile(process.execPath, [
       cliPath,
       'archive',
+      '--delete-local',
     ], { env, timeout: 30_000 });
     assert.match(archive.stdout, /^OK/m);
+    assert.match(archive.stdout, /^deleted-local: 1$/m);
     const archivePath = archive.stdout.match(/^archive: (.+)$/m)?.[1];
     assert.ok(archivePath);
     assert.equal(await pathExists(archivePath), true);
+    assert.equal(await pathExists(path.join(home, 'chats', 'fake-session')), false);
 
     const stop = await execFile(process.execPath, [cliPath, 'stop'], { env, timeout: 10_000 });
     assert.match(stop.stdout, /^OK/m);

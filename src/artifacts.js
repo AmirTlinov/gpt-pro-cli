@@ -311,7 +311,40 @@ function archiveTimestamp(date = new Date()) {
   return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z').replace('T', '-').replace('Z', '');
 }
 
-export async function archiveLocalChats({ projectName, sessionRef = 'all', sessions = [], warnings = [] }) {
+function setJsonFile(zip, name, value) {
+  const content = Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
+  if (zip.getEntry(name)) {
+    zip.updateFile(name, content);
+  } else {
+    zip.addFile(name, content);
+  }
+}
+
+async function deleteArchivedLocalSessions(chatsDir, archivedSessions, warnings) {
+  const deletedSessions = [];
+  const failedSessions = [];
+  for (const session of archivedSessions) {
+    const id = sanitizeSlug(session.id, 'session');
+    const sessionDir = path.join(chatsDir, id);
+    try {
+      await fs.rm(sessionDir, { recursive: true, force: false });
+      deletedSessions.push(id);
+    } catch (error) {
+      const failure = { id, error: error.message };
+      failedSessions.push(failure);
+      warnings.push(`failed to delete local session ${id}: ${error.message}`);
+    }
+  }
+  return { deletedSessions, failedSessions };
+}
+
+export async function archiveLocalChats({
+  projectName,
+  sessionRef = 'all',
+  sessions = [],
+  warnings = [],
+  deleteLocal = false,
+}) {
   const rootPaths = paths();
   await ensureDir(rootPaths.archivesDir);
   const zip = new AdmZip();
@@ -363,13 +396,30 @@ export async function archiveLocalChats({ projectName, sessionRef = 'all', sessi
     sessionsCount: archivedSessions.length,
     messagesCount,
     archivedSessions,
+    localDeletion: {
+      requested: Boolean(deleteLocal),
+      deletedSessions: [],
+      failedSessions: [],
+      protectedScope: 'only archived local chat directories under ~/gpt-pro/chats',
+    },
     warnings,
   };
-  zip.addFile('manifest.json', Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`));
-  zip.addFile('project-sessions.json', Buffer.from(`${JSON.stringify(sessions, null, 2)}\n`));
+  setJsonFile(zip, 'manifest.json', manifest);
+  setJsonFile(zip, 'project-sessions.json', sessions);
 
   const archivePath = path.join(rootPaths.archivesDir, `gpt-pro-${sanitizeSlug(projectName, 'project')}-${archiveTimestamp()}.zip`);
   zip.writeZip(archivePath);
+  if (deleteLocal && archivedSessions.length > 0) {
+    const deletion = await deleteArchivedLocalSessions(rootPaths.chatsDir, archivedSessions, warnings);
+    manifest.localDeletion = {
+      ...manifest.localDeletion,
+      ...deletion,
+    };
+    manifest.warnings = warnings;
+    const finalZip = new AdmZip(archivePath);
+    setJsonFile(finalZip, 'manifest.json', manifest);
+    finalZip.writeZip(archivePath);
+  }
   return {
     path: archivePath,
     manifest,

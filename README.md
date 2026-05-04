@@ -10,13 +10,13 @@ answer plus files on disk. It is a browser bridge, not an OpenAI API client.
 ## Install
 
 ```sh
-npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.3/gpt-pro-cli-0.1.3.tgz
+npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.4/gpt-pro-cli-0.1.4.tgz
 ```
 
 Or install the same release from the Git tag:
 
 ```sh
-npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.3
+npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.4
 ```
 
 For local development:
@@ -44,6 +44,7 @@ gpt-pro ask --attach ./bundle.zip -- "Question for ChatGPT"
 gpt-pro sessions
 gpt-pro ask --session latest -- "Continue from the latest project session"
 gpt-pro archive
+gpt-pro archive --delete-local
 gpt-pro stop
 ```
 
@@ -67,6 +68,10 @@ to:
 ```text
 ~/gpt-pro/archives/
 ```
+
+`gpt-pro archive --delete-local` first writes the zip, then deletes only the
+local chat directories that were actually included in that archive. It does not
+delete ChatGPT web chats or any local chat outside the selected project archive.
 
 ## Configuration
 

@@ -19,6 +19,15 @@ async function tempHome() {
   return fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-test-'));
 }
 
+async function exists(file) {
+  try {
+    await fs.access(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 test('session slug and message directories are deterministic', async () => {
   const home = await tempHome();
   process.env.GPT_PRO_HOME = home;
@@ -173,6 +182,44 @@ test('archive includes project chats, project sessions, and manifest only', asyn
   assert.equal(entries.some((entry) => entry.includes('browser-profile')), false);
 });
 
+test('archive delete-local removes only archived project chat directories after zip is written', async () => {
+  const home = await tempHome();
+  process.env.GPT_PRO_HOME = home;
+  const cachedSessionId = 'abcdef12-0000-0000-0000-000000000000';
+  const messageDir = await nextMessageDir(cachedSessionId);
+  await fs.writeFile(path.join(messageDir, 'answer.md'), 'hello');
+  const localOnlyMessageDir = await nextMessageDir('local-only-project-session');
+  await fs.writeFile(path.join(localOnlyMessageDir, 'answer.md'), 'local project');
+  await fs.writeFile(path.join(localOnlyMessageDir, 'meta.json'), JSON.stringify({ project: 'CLI_QUESTIONS' }));
+  const oldMessageDir = await nextMessageDir('old-global-session');
+  await fs.writeFile(path.join(oldMessageDir, 'answer.md'), 'old');
+  await fs.writeFile(path.join(oldMessageDir, 'meta.json'), JSON.stringify({ project: 'GENERAL' }));
+
+  const result = await archiveLocalChats({
+    projectName: 'CLI_QUESTIONS',
+    sessionRef: 'all',
+    sessions: [
+      { title: 'Latest', id: cachedSessionId, shortId: 'abcdef12', url: `https://chatgpt.com/g/g-p-demo/c/${cachedSessionId}` },
+    ],
+    warnings: [],
+    deleteLocal: true,
+  });
+
+  const archive = new AdmZip(result.path);
+  const entries = archive.getEntries().map((entry) => entry.entryName);
+  const manifest = JSON.parse(archive.readAsText('manifest.json'));
+  assert.ok(entries.includes(`chats/${cachedSessionId}/message-1/answer.md`));
+  assert.ok(entries.includes('chats/local-only-project-session/message-1/answer.md'));
+  assert.equal(entries.some((entry) => entry.includes('old-global-session')), false);
+  assert.equal(await exists(path.join(home, 'chats', cachedSessionId)), false);
+  assert.equal(await exists(path.join(home, 'chats', 'local-only-project-session')), false);
+  assert.equal(await exists(path.join(home, 'chats', 'old-global-session')), true);
+  assert.equal(result.manifest.localDeletion.requested, true);
+  assert.deepEqual(result.manifest.localDeletion.deletedSessions.sort(), [cachedSessionId, 'local-only-project-session'].sort());
+  assert.deepEqual(result.manifest.localDeletion.failedSessions, []);
+  assert.deepEqual(manifest.localDeletion.deletedSessions.sort(), [cachedSessionId, 'local-only-project-session'].sort());
+});
+
 test('archive does not guess all chats when project cache is empty', async () => {
   const home = await tempHome();
   process.env.GPT_PRO_HOME = home;
@@ -205,11 +252,15 @@ test('archive rejects explicit local session refs outside the project', async ()
     sessionRef: 'old-global-session',
     sessions: [],
     warnings: [],
+    deleteLocal: true,
   });
 
   const archive = new AdmZip(result.path);
   const entries = archive.getEntries().map((entry) => entry.entryName);
   assert.equal(result.manifest.sessionsCount, 0);
+  assert.equal(result.manifest.localDeletion.requested, true);
+  assert.deepEqual(result.manifest.localDeletion.deletedSessions, []);
+  assert.equal(await exists(path.join(home, 'chats', 'old-global-session')), true);
   assert.equal(entries.some((entry) => entry.includes('old-global-session')), false);
   assert.match(result.manifest.warnings.join('\n'), /not known in project CLI_QUESTIONS/);
 });

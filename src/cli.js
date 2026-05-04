@@ -33,7 +33,7 @@ Commands:
   gpt-pro sessions [--project CLI_QUESTIONS]
   gpt-pro ask [--session new|current|<url>] [--project CLI_QUESTIONS] [--attach <zip-or-dir>] [--timeout <ms>] -- <prompt>
   gpt-pro smoke [--timeout <ms>]
-  gpt-pro archive [--session all|latest|<index|id>] [--project CLI_QUESTIONS]
+  gpt-pro archive [--session all|latest|<index|id>] [--project CLI_QUESTIONS] [--delete-local]
   gpt-pro stop
 `;
 }
@@ -135,6 +135,7 @@ function parseArchiveArgs(argv) {
   const options = {
     project: settings().projectName,
     session: 'all',
+    deleteLocal: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -144,6 +145,10 @@ function parseArchiveArgs(argv) {
     }
     if (arg === '--session') {
       options.session = argv[++index];
+      continue;
+    }
+    if (arg === '--delete-local') {
+      options.deleteLocal = true;
       continue;
     }
     throw new Error(`Unknown archive option: ${arg}`);
@@ -455,13 +460,16 @@ async function archive(argv) {
     sessionRef: options.session,
     sessions: sessionsList,
     warnings,
+    deleteLocal: options.deleteLocal,
   });
+  const status = result.manifest.warnings.length > 0 ? 'WARN' : 'OK';
   console.log([
-    'OK',
+    status,
     `archive: ${result.path}`,
     `project: ${options.project}`,
     `sessions: ${result.manifest.sessionsCount}`,
     `messages: ${result.manifest.messagesCount}`,
+    `deleted-local: ${result.manifest.localDeletion.deletedSessions.length}`,
     `warnings: ${result.manifest.warnings.length}`,
     ...result.manifest.warnings.slice(0, 5).map((warning) => `warning: ${warning}`),
   ].join('\n'));
