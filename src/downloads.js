@@ -43,6 +43,22 @@ function filenameFromUrl(url) {
   }
 }
 
+function githubRawUrl(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname !== 'github.com') return '';
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    const blobIndex = parts.indexOf('blob');
+    if (blobIndex !== 2 || parts.length < 5) return '';
+    const [owner, repo] = parts;
+    const ref = parts[3];
+    const filePath = parts.slice(4).map(encodeURIComponent).join('/');
+    return `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(ref)}/${filePath}`;
+  } catch {
+    return '';
+  }
+}
+
 function cleanFilename(value, fallback) {
   const parsed = path.parse(path.basename(String(value || '')));
   const name = sanitizeSlug(parsed.name, fallback);
@@ -286,10 +302,21 @@ export async function downloadAnswerLinks(page, links, downloadDir, options = {}
   const errors = [];
 
   for (const [index, link] of links.entries()) {
+    const candidates = [link.url, githubRawUrl(link.url)].filter(Boolean);
+    const tried = new Set();
+    let lastError = null;
     try {
-      const response = await page.context().request.get(link.url, { timeout: timeoutMs, maxRedirects: 5 });
-      if (!response.ok()) {
-        throw new Error(`HTTP ${response.status()}`);
+      let response = null;
+      for (const candidate of candidates) {
+        if (tried.has(candidate)) continue;
+        tried.add(candidate);
+        response = await page.context().request.get(candidate, { timeout: timeoutMs, maxRedirects: 5 });
+        if (response.ok()) break;
+        lastError = new Error(`HTTP ${response.status()}`);
+        response = null;
+      }
+      if (!response) {
+        throw lastError || new Error('download failed');
       }
       const headers = response.headers();
       const contentLength = Number.parseInt(headers['content-length'] || '0', 10);

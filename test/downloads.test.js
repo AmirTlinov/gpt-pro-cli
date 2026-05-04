@@ -5,7 +5,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { downloadAnswerArtifacts, extractAnswerLinks } from '../src/downloads.js';
+import { downloadAnswerArtifacts, downloadAnswerLinks, extractAnswerLinks } from '../src/downloads.js';
 
 function fakeDownloadServer() {
   const server = http.createServer((req, res) => {
@@ -75,6 +75,52 @@ test('answer downloader scopes links to the current assistant answer and records
     await browser.close();
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test('answer downloader falls back from GitHub blob links to raw content', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-github-raw-'));
+  const calls = [];
+  const page = {
+    context() {
+      return {
+        request: {
+          async get(url) {
+            calls.push(url);
+            if (url === 'https://github.com/AmirTlinov/gpt-pro-cli/blob/main/README.md') {
+              return {
+                ok: () => false,
+                status: () => 429,
+              };
+            }
+            return {
+              ok: () => true,
+              status: () => 200,
+              headers: () => ({ 'content-type': 'text/markdown' }),
+              url: () => url,
+              body: async () => Buffer.from('# raw readme'),
+            };
+          },
+        },
+      };
+    },
+  };
+
+  const result = await downloadAnswerLinks(page, [
+    {
+      url: 'https://github.com/AmirTlinov/gpt-pro-cli/blob/main/README.md',
+      label: 'README',
+    },
+  ], dir, { timeoutMs: 5000, maxBytes: 1024 * 1024 });
+
+  assert.deepEqual(calls, [
+    'https://github.com/AmirTlinov/gpt-pro-cli/blob/main/README.md',
+    'https://raw.githubusercontent.com/AmirTlinov/gpt-pro-cli/main/README.md',
+  ]);
+  assert.equal(result.errors.length, 0);
+  assert.equal(result.downloads.length, 1);
+  assert.equal(result.downloads[0].finalUrl, 'https://raw.githubusercontent.com/AmirTlinov/gpt-pro-cli/main/README.md');
+  assert.match(result.downloads[0].path, /README\.md$/);
+  assert.equal(await fs.readFile(result.downloads[0].path, 'utf8'), '# raw readme');
 });
 
 test('answer downloader clicks filename-like assistant file controls', async (t) => {
