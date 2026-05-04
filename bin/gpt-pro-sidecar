@@ -1,14 +1,14 @@
 #!/bin/bash
 set -euo pipefail
-export PATH="${PATH:-/Users/amir/.volta/bin:/Users/amir/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
+export PATH="${PATH:+$PATH:}/Users/amir/.volta/bin:/Users/amir/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 usage() {
   cat <<'USAGE'
 gpt-pro-sidecar
 
 Commands:
-  gpt-pro-sidecar start [--label <name>] [--project CLI_QUESTIONS] [--timeout <ms>]
-  gpt-pro-sidecar flagship <run-dir> [--project CLI_QUESTIONS] [--timeout <ms>]
+  gpt-pro-sidecar start [--label <name>] [--project CLI_QUESTIONS] [--github-repo owner/repo] [--timeout <ms>]
+  gpt-pro-sidecar flagship <run-dir> [--project CLI_QUESTIONS] [--github-repo owner/repo] [--timeout <ms>]
   gpt-pro-sidecar status <run-dir>
   gpt-pro-sidecar show <run-dir>
 
@@ -52,6 +52,7 @@ start() {
   local label="side-thinking"
   local project="${GPT_PRO_PROJECT:-CLI_QUESTIONS}"
   local timeout="${GPT_PRO_SIDE_TIMEOUT_MS:-900000}"
+  local github_repos=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --label)
@@ -64,6 +65,10 @@ start() {
         ;;
       --timeout)
         timeout="${2:?missing --timeout value}"
+        shift 2
+        ;;
+      --github-repo)
+        github_repos+=("${2:?missing --github-repo value}")
         shift 2
         ;;
       *)
@@ -86,13 +91,26 @@ start() {
   mkdir -p "$run_dir"
   prompt_file="$run_dir/prompt.md"
   cat > "$prompt_file"
+  if [[ ${#github_repos[@]} -gt 0 ]]; then
+    printf '%s\n' "${github_repos[@]}" > "$run_dir/github_repos"
+  fi
   date -u +"%Y-%m-%dT%H:%M:%SZ" > "$run_dir/started_at"
 
   (
     set +e
-    "$gpt_pro_bin" ask --session new --project "$project" --timeout "$timeout" -- "$(cat "$prompt_file")" \
-      > "$run_dir/stdout.txt" \
-      2> "$run_dir/stderr.txt"
+    if [[ ${#github_repos[@]} -gt 0 ]]; then
+      github_args=()
+      for repo in "${github_repos[@]}"; do
+        github_args+=(--github-repo "$repo")
+      done
+      "$gpt_pro_bin" ask --session new --project "$project" --timeout "$timeout" "${github_args[@]}" -- "$(cat "$prompt_file")" \
+        > "$run_dir/stdout.txt" \
+        2> "$run_dir/stderr.txt"
+    else
+      "$gpt_pro_bin" ask --session new --project "$project" --timeout "$timeout" -- "$(cat "$prompt_file")" \
+        > "$run_dir/stdout.txt" \
+        2> "$run_dir/stderr.txt"
+    fi
     code=$?
     printf '%s\n' "$code" > "$run_dir/exit_code"
     date -u +"%Y-%m-%dT%H:%M:%SZ" > "$run_dir/finished_at"
@@ -151,6 +169,12 @@ flagship() {
   shift || true
   local project="${GPT_PRO_PROJECT:-CLI_QUESTIONS}"
   local timeout="${GPT_PRO_SIDE_TIMEOUT_MS:-900000}"
+  local github_repos=()
+  if [[ -f "$run_dir/github_repos" ]]; then
+    while IFS= read -r repo; do
+      [[ -n "$repo" ]] && github_repos+=("$repo")
+    done < "$run_dir/github_repos"
+  fi
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --project)
@@ -159,6 +183,10 @@ flagship() {
         ;;
       --timeout)
         timeout="${2:?missing --timeout value}"
+        shift 2
+        ;;
+      --github-repo)
+        github_repos+=("${2:?missing --github-repo value}")
         shift 2
         ;;
       *)
@@ -210,9 +238,19 @@ $extra_prompt
 PROMPT
 
   set +e
-  "$gpt_pro_bin" ask --session "$url" --project "$project" --timeout "$timeout" -- "$(cat "$prompt_file")" \
-    > "$out_dir/stdout.txt" \
-    2> "$out_dir/stderr.txt"
+  if [[ ${#github_repos[@]} -gt 0 ]]; then
+    github_args=()
+    for repo in "${github_repos[@]}"; do
+      github_args+=(--github-repo "$repo")
+    done
+    "$gpt_pro_bin" ask --session "$url" --project "$project" --timeout "$timeout" "${github_args[@]}" -- "$(cat "$prompt_file")" \
+      > "$out_dir/stdout.txt" \
+      2> "$out_dir/stderr.txt"
+  else
+    "$gpt_pro_bin" ask --session "$url" --project "$project" --timeout "$timeout" -- "$(cat "$prompt_file")" \
+      > "$out_dir/stdout.txt" \
+      2> "$out_dir/stderr.txt"
+  fi
   local code=$?
   set -e
   printf '%s\n' "$code" > "$out_dir/exit_code"

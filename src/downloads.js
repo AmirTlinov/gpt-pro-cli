@@ -90,14 +90,22 @@ export async function extractAnswerLinks(page, prompt) {
       return String(value || '').replace(/\s+/g, ' ').trim();
     }
 
+    function compact(value) {
+      return normalized(value).replace(/\s+/g, '');
+    }
+
     const expected = normalized(expectedPrompt).slice(0, 200);
+    const expectedCompact = compact(expectedPrompt).slice(0, 200);
     const userSelectors = [
       '[data-message-author-role="user"]',
       '[data-testid="user-message"]',
       '[data-gpt-pro-user]',
     ];
     const users = userSelectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)));
-    const matchingUsers = users.filter((node) => normalized(visibleText(node)).includes(expected));
+    const matchingUsers = users.filter((node) => {
+      const text = visibleText(node);
+      return normalized(text).includes(expected) || compact(text).includes(expectedCompact);
+    });
     const anchor = matchingUsers[matchingUsers.length - 1];
     if (!anchor) return [];
 
@@ -209,9 +217,17 @@ export async function clickAnswerDownloadControls(page, prompt, downloadDir, opt
       return String(value || '').replace(/\s+/g, ' ').trim();
     }
 
+    function compact(value) {
+      return normalized(value).replace(/\s+/g, '');
+    }
+
     const expected = normalized(expectedPrompt).slice(0, 200);
+    const expectedCompact = compact(expectedPrompt).slice(0, 200);
     const users = Array.from(document.querySelectorAll('[data-message-author-role="user"],[data-testid="user-message"],[data-gpt-pro-user]'));
-    const matchingUsers = users.filter((node) => normalized(visibleText(node)).includes(expected));
+    const matchingUsers = users.filter((node) => {
+      const text = visibleText(node);
+      return normalized(text).includes(expected) || compact(text).includes(expectedCompact);
+    });
     const anchor = matchingUsers[matchingUsers.length - 1];
     if (!anchor) return [];
 

@@ -91,6 +91,12 @@ function receiptWarnings(data) {
   for (const item of meta.downloadErrors || []) {
     warnings.push(`download failed: ${item.label || item.url || 'download'}${item.error ? ` (${item.error.split('\n')[0]})` : ''}`);
   }
+  if (Array.isArray(meta.githubRepositories) && meta.githubRepositories.length > 0) {
+    const selected = new Set(meta.githubConnector?.selected || []);
+    for (const repository of meta.githubRepositories) {
+      if (!selected.has(repository)) warnings.push(`GitHub connector did not report selected repository: ${repository}`);
+    }
+  }
   if (!meta.project) warnings.push('project is missing in metadata');
   if (!meta.sessionUrl) warnings.push('session URL is missing in metadata');
   return warnings;
@@ -102,6 +108,7 @@ function receiptMarkdown(receipt) {
     '',
     `status: ${receipt.status}`,
     `project: ${receipt.project || ''}`,
+    `github: ${receipt.githubRepositories.length ? receipt.githubRepositories.join(', ') : ''}`,
     `session: ${receipt.sessionUrl || ''}`,
     `created: ${receipt.createdAt}`,
     `files: ${receipt.counts.files}`,
@@ -130,6 +137,8 @@ async function writeMessageReceipt(messageDir, data) {
     messageDir: path.resolve(messageDir),
     project: meta.project || null,
     sessionUrl: meta.sessionUrl || null,
+    githubRepositories: Array.isArray(meta.githubRepositories) ? meta.githubRepositories : [],
+    githubConnector: meta.githubConnector || null,
     command: meta.command || null,
     elapsedMs: meta.elapsedMs || null,
     counts: {

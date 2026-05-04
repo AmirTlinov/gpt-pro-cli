@@ -31,7 +31,7 @@ Commands:
   gpt-pro doctor
   gpt-pro login
   gpt-pro sessions [--project CLI_QUESTIONS]
-  gpt-pro ask [--session new|current|<url>] [--project CLI_QUESTIONS] [--attach <zip-or-dir>] [--timeout <ms>] -- <prompt>
+  gpt-pro ask [--session new|current|<url>] [--project CLI_QUESTIONS] [--github-repo owner/repo] [--attach <zip-or-dir>] [--timeout <ms>] -- <prompt>
   gpt-pro smoke [--timeout <ms>]
   gpt-pro archive [--session all|latest|<index|id>] [--project CLI_QUESTIONS] [--delete-local]
   gpt-pro stop
@@ -51,12 +51,52 @@ function resolvePath(value) {
   return path.resolve(process.cwd(), value);
 }
 
+function githubRepoValues(value) {
+  return String(value || '')
+    .split(/[,\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeGitHubRepositories(values = []) {
+  const repositories = [...new Set(values.flatMap(githubRepoValues))];
+  for (const repository of repositories) {
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
+      throw new Error(`Invalid GitHub repository "${repository}". Use owner/repo, for example AmirTlinov/gpt-pro-cli.`);
+    }
+  }
+  return repositories;
+}
+
+function defaultGitHubRepositories() {
+  return normalizeGitHubRepositories([
+    process.env.GPT_PRO_GITHUB_REPO || '',
+    process.env.GPT_PRO_GITHUB_REPOS || '',
+  ]);
+}
+
+function githubGroundedPrompt(prompt, repositories = []) {
+  if (!repositories.length) return prompt;
+  const repoLines = repositories.map((repository) => `- ${repository}`).join('\n');
+  return [
+    'Repository grounding requirement:',
+    'Use the ChatGPT GitHub connector for these repositories before making repo-specific claims:',
+    repoLines,
+    '',
+    'If the GitHub connector is unavailable, not selected, not indexed, or cannot access one of these repositories, say that explicitly first instead of guessing from memory. Cite concrete files, paths, symbols, commits, or PRs from the GitHub connector when you make repository-specific claims.',
+    '',
+    'Question:',
+    prompt,
+  ].join('\n');
+}
+
 function parseAskArgs(argv) {
   const options = {
     session: 'new',
     project: settings().projectName,
     attach: null,
     timeoutMs: settings().operationTimeoutMs,
+    githubRepositories: defaultGitHubRepositories(),
     promptParts: [],
   };
   let afterDash = false;
@@ -82,6 +122,10 @@ function parseAskArgs(argv) {
       options.attach = resolvePath(argv[++index]);
       continue;
     }
+    if (arg === '--github-repo') {
+      options.githubRepositories.push(...githubRepoValues(argv[++index]));
+      continue;
+    }
     if (arg === '--timeout') {
       options.timeoutMs = Number.parseInt(argv[++index], 10);
       continue;
@@ -94,7 +138,7 @@ function parseAskArgs(argv) {
   if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) {
     throw new Error('--timeout must be a positive number of milliseconds');
   }
-  return { ...options, prompt };
+  return { ...options, prompt, githubRepositories: normalizeGitHubRepositories(options.githubRepositories) };
 }
 
 function parseSessionsArgs(argv) {
@@ -296,13 +340,15 @@ async function sessions(argv) {
 
 async function runAsk(options) {
   const rootPaths = paths();
+  const githubRepositories = normalizeGitHubRepositories(options.githubRepositories || []);
+  const sentPrompt = githubGroundedPrompt(options.prompt, githubRepositories);
   const pendingId = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   const pendingDir = path.join(rootPaths.runtimeDir, 'pending', pendingId);
   const pendingAttachments = path.join(pendingDir, 'attachments');
   const pendingFiles = path.join(pendingDir, 'files');
   await ensureDir(pendingAttachments);
   await ensureDir(pendingFiles);
-  await writeText(path.join(pendingDir, 'prompt.md'), options.prompt);
+  await writeText(path.join(pendingDir, 'prompt.md'), sentPrompt);
 
   let attachmentPath = null;
   if (options.attach) {
@@ -315,8 +361,9 @@ async function runAsk(options) {
   const result = await keeperRequest(runtime, '/ask', {
     session: resolvedSession.session,
     projectName: options.project,
-    prompt: options.prompt,
+    prompt: sentPrompt,
     attachmentPath,
+    githubRepositories,
     downloadDir: pendingFiles,
     timeoutMs: options.timeoutMs,
   }, options.timeoutMs + 10_000);
@@ -340,7 +387,7 @@ async function runAsk(options) {
   ];
   const extractedFiles = await extractDownloadedArchives(finalFilesDir);
   const artifactReceipt = await writeMessageArtifacts(messageDir, {
-    prompt: options.prompt,
+    prompt: sentPrompt,
     answer: result.answer || result.latestVisibleAnswer || '',
     reasoning: result.reasoning || '',
     links: result.links || [],
@@ -356,6 +403,9 @@ async function runAsk(options) {
       project: options.project,
       projectUrl: result.project?.projectUrl || null,
       projectCreated: result.project?.created || false,
+      originalPrompt: options.prompt,
+      githubRepositories,
+      githubConnector: result.githubConnector || null,
       sessionUrl: result.url,
       startedAt: startedAt.toISOString(),
       completedAt: new Date().toISOString(),
@@ -381,6 +431,7 @@ async function runAsk(options) {
     messageDir,
     receiptPath: artifactReceipt.path,
     receipt: artifactReceipt.receipt,
+    githubRepositories,
     result,
     elapsed: formatDuration(result.elapsedMs),
   };
@@ -396,6 +447,7 @@ async function ask(argv) {
     `files: ${output.filesDir}`,
     `receipt: ${output.receiptPath}`,
     `project: ${options.project}`,
+    ...(output.githubRepositories.length ? [`github: ${output.githubRepositories.join(', ')}`] : []),
     `elapsed: ${output.elapsed}`,
     `warnings: ${output.receipt?.warnings?.length || 0}`,
     `url: ${output.result.url}`,

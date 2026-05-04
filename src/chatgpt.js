@@ -26,6 +26,27 @@ const ATTACH_SELECTORS = [
   '[data-testid*="attach"]',
 ];
 
+const TOOL_MENU_SELECTORS = [
+  'button[aria-label*="Add"]',
+  'button[aria-label*="add"]',
+  'button[aria-label*="Tools"]',
+  'button[aria-label*="tools"]',
+  'button[aria-label*="Инструмент"]',
+  'button[aria-label*="инструмент"]',
+  'button:has-text("+")',
+  '[data-testid*="composer-plus"]',
+  '[data-testid*="tools"]',
+];
+
+const GITHUB_REPO_SEARCH_SELECTORS = [
+  'input[placeholder*="repo"]',
+  'input[placeholder*="Repo"]',
+  'input[placeholder*="репозитор"]',
+  'input[placeholder*="Репозитор"]',
+  'input[placeholder*="Поиск"]',
+  'input[type="search"]',
+];
+
 const STOP_SELECTORS = [
   '[data-testid="stop-button"]',
   'button[aria-label*="Stop"]',
@@ -139,6 +160,120 @@ async function clickVisibleControlByText(page, labels) {
     node.click();
     return true;
   }, labels);
+}
+
+async function clickVisibleNodeByLineText(page, labels) {
+  return page.evaluate((wantedLabels) => {
+    function normalized(value) {
+      return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function visible(node) {
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    }
+
+    const wanted = wantedLabels.map(normalized);
+    const selectors = ['button,a,[role="button"],[role="menuitem"],[role="option"]', 'li', 'div'];
+    for (const selector of selectors) {
+      const node = Array.from(document.querySelectorAll(selector)).find((candidate) => {
+        if (!visible(candidate)) return false;
+        if (selector === 'div' && candidate.querySelector('button,a,[role="button"],[role="menuitem"],[role="option"],li')) return false;
+        const raw = candidate.innerText || candidate.textContent || candidate.getAttribute('aria-label');
+        const text = normalized(raw);
+        const lines = String(raw || '').split('\n').map(normalized).filter(Boolean);
+        return wanted.some((label) => text === label || lines.includes(label));
+      });
+      if (!node) continue;
+      node.scrollIntoView({ block: 'center', inline: 'center' });
+      node.click();
+      return true;
+    }
+    return false;
+  }, labels);
+}
+
+async function clickFirstVisible(page, selectors) {
+  for (const selector of selectors) {
+    const control = page.locator(selector).first();
+    try {
+      if (await control.count() > 0 && await control.isVisible({ timeout: 500 })) {
+        await control.click({ force: true });
+        return true;
+      }
+    } catch {
+      // Try the next selector.
+    }
+  }
+  return false;
+}
+
+async function fillFirstVisibleInput(page, selectors, value) {
+  for (const selector of selectors) {
+    const input = page.locator(selector).first();
+    try {
+      if (await input.count() > 0 && await input.isVisible({ timeout: 500 })) {
+        await input.fill(value);
+        return true;
+      }
+    } catch {
+      // Try the next selector.
+    }
+  }
+  return false;
+}
+
+async function openGitHubConnector(page) {
+  if (await clickVisibleControlByText(page, ['GitHub'])) {
+    await page.waitForTimeout(500);
+    return true;
+  }
+
+  if (await clickFirstVisible(page, TOOL_MENU_SELECTORS)) {
+    await page.waitForTimeout(500);
+    if (await clickVisibleControlByText(page, ['GitHub'])) {
+      await page.waitForTimeout(500);
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function selectGitHubRepository(page, repository, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  let searched = false;
+  while (Date.now() < deadline) {
+    if (await clickVisibleNodeByLineText(page, [repository])) return true;
+    if (!searched && await fillFirstVisibleInput(page, GITHUB_REPO_SEARCH_SELECTORS, repository)) {
+      searched = true;
+      await page.waitForTimeout(700);
+      continue;
+    }
+    await page.waitForTimeout(500);
+  }
+  return false;
+}
+
+export async function attachGitHubRepositories(page, repositories = []) {
+  const requested = [...new Set((repositories || []).map((repo) => String(repo || '').trim()).filter(Boolean))];
+  if (requested.length === 0) return { requested: [], selected: [] };
+
+  const selected = [];
+  for (const repository of requested) {
+    if (!await openGitHubConnector(page)) {
+      throw new Error('ChatGPT GitHub connector control was not found. Configure/connect GitHub in ChatGPT, then retry.');
+    }
+    if (!await selectGitHubRepository(page, repository)) {
+      throw new Error(`GitHub repository "${repository}" was not found in the ChatGPT connector. Check that it is indexed and visible in ChatGPT.`);
+    }
+    selected.push(repository);
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForTimeout(250);
+  }
+
+  return { requested, selected };
 }
 
 export async function findProjectUrl(page, projectName) {
@@ -506,8 +641,14 @@ export async function waitForUserPromptVisible(page, prompt, timeoutMs = 10_000)
 async function isUserPromptVisible(page, expected) {
   return page.evaluate((value) => {
     const normalized = (text) => String(text || '').replace(/\s+/g, ' ').trim();
+    const compact = (text) => normalized(text).replace(/\s+/g, '');
+    const wanted = normalized(value);
+    const wantedCompact = compact(value);
     return Array.from(document.querySelectorAll('[data-message-author-role="user"],[data-testid="user-message"],[data-gpt-pro-user]'))
-      .some((node) => normalized(node.innerText || node.textContent).includes(value));
+      .some((node) => {
+        const text = node.innerText || node.textContent;
+        return normalized(text).includes(wanted) || compact(text).includes(wantedCompact);
+      });
   }, expected);
 }
 
@@ -520,22 +661,25 @@ async function waitForPromptAccepted(page, composer, prompt, timeoutMs = 8000) {
   const expected = String(prompt || '').replace(/\s+/g, ' ').trim();
   const probe = expected.slice(0, 200);
   const shortProbe = expected.slice(0, 50);
+  const shortProbeCompact = shortProbe.replace(/\s+/g, '');
   while (Date.now() < deadline) {
     if (await isUserPromptVisible(page, probe)) return true;
     if (await isGenerating(page)) return true;
     const current = await composerText(composer).catch(() => '');
-    if (shortProbe && !current.includes(shortProbe)) return true;
+    if (shortProbe && !current.includes(shortProbe) && !current.replace(/\s+/g, '').includes(shortProbeCompact)) return true;
     await page.waitForTimeout(500);
   }
   return false;
 }
 
-export async function submitPrompt(page, { prompt, attachmentPath }) {
-  const composer = await waitForComposer(page);
+export async function submitPrompt(page, { prompt, attachmentPath, githubRepositories = [] }) {
+  let composer = await waitForComposer(page);
   await composer.evaluate((element) => {
     element.scrollIntoView({ block: 'center', inline: 'nearest' });
     element.focus();
   });
+  const githubConnector = await attachGitHubRepositories(page, githubRepositories);
+  composer = await waitForComposer(page);
   await setComposerText(page, composer, prompt);
   await page.waitForTimeout(500);
   if (attachmentPath) {
@@ -556,6 +700,7 @@ export async function submitPrompt(page, { prompt, attachmentPath }) {
       }
     }
   }
+  return { githubConnector };
 }
 
 export async function extractLatestAnswer(page) {
@@ -593,7 +738,12 @@ export async function extractLatestAnswerAfterPrompt(page, prompt) {
       return String(value || '').replace(/\s+/g, ' ').trim();
     }
 
+    function compact(value) {
+      return normalized(value).replace(/\s+/g, '');
+    }
+
     const expected = normalized(expectedPrompt).slice(0, 200);
+    const expectedCompact = compact(expectedPrompt).slice(0, 200);
     const userSelectors = [
       '[data-message-author-role="user"]',
       '[data-testid="user-message"]',
@@ -607,7 +757,10 @@ export async function extractLatestAnswerAfterPrompt(page, prompt) {
     ];
 
     const userNodes = userSelectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)));
-    const matchingUsers = userNodes.filter((node) => normalized(visibleText(node)).includes(expected));
+    const matchingUsers = userNodes.filter((node) => {
+      const text = visibleText(node);
+      return normalized(text).includes(expected) || compact(text).includes(expectedCompact);
+    });
     const anchor = matchingUsers[matchingUsers.length - 1];
     if (!anchor) return '';
 

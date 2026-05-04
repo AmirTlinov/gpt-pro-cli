@@ -34,6 +34,15 @@ function fakeChatGptServer() {
         </nav>
         ${inProject ? `<a href="/g/${projectId}/c/fake-session">Fake Session</a>` : ''}
         <main>
+          <button id="tools" aria-label="Add tools">+</button>
+          <div id="tool-menu" style="display:none">
+            <button id="github">GitHub</button>
+          </div>
+          <div id="github-menu" style="display:none">
+            <input id="repo-search" placeholder="Поиск в репозиториях..." />
+            <button id="repo" style="display:none">AmirTlinov/gpt-pro-cli</button>
+          </div>
+          <div id="selected-repo"></div>
           <div id="prompt-textarea" contenteditable="true" role="textbox"></div>
           <input type="file" />
           <button data-testid="send-button">Send</button>
@@ -47,6 +56,20 @@ function fakeChatGptServer() {
                 <button type="submit" form="project-modal-form">Создать проект</button>
               </form>
             \`;
+          });
+          document.querySelector('#tools').addEventListener('click', () => {
+            document.querySelector('#tool-menu').style.display = 'block';
+          });
+          document.querySelector('#github').addEventListener('click', () => {
+            document.querySelector('#github-menu').style.display = 'block';
+          });
+          document.querySelector('#repo-search').addEventListener('input', (event) => {
+            if (event.target.value === 'AmirTlinov/gpt-pro-cli') {
+              document.querySelector('#repo').style.display = 'block';
+            }
+          });
+          document.querySelector('#repo').addEventListener('click', () => {
+            document.querySelector('#selected-repo').textContent = 'AmirTlinov/gpt-pro-cli';
           });
           document.querySelector('[data-testid="send-button"]').addEventListener('click', () => {
             const prompt = document.querySelector('#prompt-textarea').textContent;
@@ -125,6 +148,29 @@ test('CLI ask talks through keeper and stop cleans runtime file', async (t) => {
     const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
     assert.equal(receipt.status, 'ok');
     assert.ok(receipt.files.some((file) => file.path === 'answer.md'));
+
+    const grounded = await execFile(process.execPath, [
+      cliPath,
+      'ask',
+      '--session',
+      'new',
+      '--github-repo',
+      'AmirTlinov/gpt-pro-cli',
+      '--timeout',
+      '8000',
+      '--',
+      'repo-grounded nonce',
+    ], { env, timeout: 30_000 });
+    assert.match(grounded.stdout, /^OK/m);
+    assert.match(grounded.stdout, /^github: AmirTlinov\/gpt-pro-cli$/m);
+    const groundedReceiptPath = grounded.stdout.match(/^receipt: (.+)$/m)?.[1];
+    assert.ok(groundedReceiptPath);
+    const groundedReceipt = JSON.parse(await fs.readFile(groundedReceiptPath, 'utf8'));
+    assert.deepEqual(groundedReceipt.githubRepositories, ['AmirTlinov/gpt-pro-cli']);
+    assert.deepEqual(groundedReceipt.githubConnector.selected, ['AmirTlinov/gpt-pro-cli']);
+    const groundedPrompt = await fs.readFile(path.join(groundedReceipt.messageDir, 'prompt.md'), 'utf8');
+    assert.match(groundedPrompt, /Repository grounding requirement:/);
+    assert.match(groundedPrompt, /Use the ChatGPT GitHub connector/);
 
     const latest = await execFile(process.execPath, [
       cliPath,

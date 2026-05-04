@@ -10,13 +10,13 @@ answer plus files on disk. It is a browser bridge, not an OpenAI API client.
 ## Install
 
 ```sh
-npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.8/gpt-pro-cli-0.1.8.tgz
+npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.9/gpt-pro-cli-0.1.9.tgz
 ```
 
 Or install the same release from the Git tag:
 
 ```sh
-npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.8
+npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.9
 ```
 
 For local development:
@@ -41,6 +41,7 @@ gpt-pro ask -- "Think through this carefully..."
 gpt-pro doctor
 gpt-pro login
 gpt-pro ask --attach ./bundle.zip -- "Question for ChatGPT"
+gpt-pro ask --github-repo AmirTlinov/gpt-pro-cli -- "Use GitHub connector context and review this design"
 gpt-pro sessions
 gpt-pro ask --session latest -- "Continue from the latest project session"
 gpt-pro archive
@@ -52,6 +53,7 @@ Agents can also use the bundled sidecar helper for quiet parallel thinking:
 
 ```sh
 printf '%s\n' "Question for GPT PRO" | gpt-pro-sidecar start --label side-thinking
+printf '%s\n' "Repo-grounded question" | gpt-pro-sidecar start --label review --github-repo AmirTlinov/gpt-pro-cli
 gpt-pro-sidecar status <run-dir>
 printf '%s\n' "Final pressure" | gpt-pro-sidecar flagship <run-dir>
 ```
@@ -60,6 +62,21 @@ printf '%s\n' "Final pressure" | gpt-pro-sidecar flagship <run-dir>
 the first completed run output and asks the same ChatGPT thread for a final
 strengthening pass, so agent workflows can use GPT PRO without turning the chat
 into manual copy/paste.
+
+## GitHub Grounding
+
+For repo-specific questions, pass `--github-repo owner/repo`. The CLI tries to
+select that repository through ChatGPT's GitHub connector, sends a prompt that
+explicitly requires using the connector, and records the requested/selected
+repositories in `meta.json` and `receipt.json`.
+
+```sh
+gpt-pro ask --github-repo AmirTlinov/gpt-pro-cli -- "Find the risky parts of the current CLI design"
+```
+
+The repository must already be visible/indexed in ChatGPT's GitHub connector.
+If the connector control or repository is unavailable, the command fails instead
+of pretending that GPT PRO saw the repo.
 
 ## Files
 

@@ -69,11 +69,13 @@ let session = '';
 let project = '';
 let timeout = '';
 let prompt = '';
+const githubRepos = [];
 for (let index = 0; index < args.length; index += 1) {
   const arg = args[index];
   if (arg === '--session') session = args[++index];
   else if (arg === '--project') project = args[++index];
   else if (arg === '--timeout') timeout = args[++index];
+  else if (arg === '--github-repo') githubRepos.push(args[++index]);
   else if (arg === '--') {
     prompt = args.slice(index + 1).join(' ');
     break;
@@ -85,7 +87,7 @@ const count = fs.existsSync(countFile) ? Number(fs.readFileSync(countFile, 'utf8
 fs.writeFileSync(countFile, String(count));
 const answerPath = path.join(fakeDir, 'answer-' + count + '.md');
 fs.writeFileSync(answerPath, session === 'new' ? 'FIRST PASS CONTENT' : 'FLAGSHIP CONTENT');
-fs.appendFileSync(path.join(fakeDir, 'calls.jsonl'), JSON.stringify({ args, session, project, timeout, prompt, answerPath }) + '\\n');
+fs.appendFileSync(path.join(fakeDir, 'calls.jsonl'), JSON.stringify({ args, session, project, timeout, githubRepos, prompt, answerPath }) + '\\n');
 console.log('OK');
 console.log('answer: ' + answerPath);
 console.log('url: https://chatgpt.com/c/fake-' + count);
@@ -104,6 +106,8 @@ console.log('url: https://chatgpt.com/c/fake-' + count);
     'Quality Probe',
     '--project',
     'WORK_PROJECT',
+    '--github-repo',
+    'AmirTlinov/gpt-pro-cli',
     '--timeout',
     '123',
   ], { env, input: 'Initial prompt' });
@@ -133,10 +137,12 @@ console.log('url: https://chatgpt.com/c/fake-' + count);
   assert.equal(calls[0].session, 'new');
   assert.equal(calls[0].project, 'WORK_PROJECT');
   assert.equal(calls[0].timeout, '123');
+  assert.deepEqual(calls[0].githubRepos, ['AmirTlinov/gpt-pro-cli']);
   assert.equal(calls[0].prompt, 'Initial prompt');
   assert.equal(calls[1].session, 'https://chatgpt.com/c/fake-1');
   assert.equal(calls[1].project, 'WORK_PROJECT');
   assert.equal(calls[1].timeout, '456');
+  assert.deepEqual(calls[1].githubRepos, ['AmirTlinov/gpt-pro-cli']);
   assert.match(calls[1].prompt, /FIRST PASS CONTENT/);
   assert.match(calls[1].prompt, /Extra pressure from Codex/);
 
@@ -144,7 +150,7 @@ console.log('url: https://chatgpt.com/c/fake-' + count);
   await fs.mkdir(noPathFakeDir, { recursive: true });
   const noPathEnv = {
     ...process.env,
-    PATH: '',
+    PATH: '/tmp/no-system-bin',
     GPT_PRO_BIN: fakeGptPro,
     GPT_PRO_FAKE_DIR: noPathFakeDir,
     GPT_PRO_SIDECAR_DIR: path.join(temp, 'runs-no-path'),

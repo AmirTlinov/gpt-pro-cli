@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { chromium } from 'playwright';
 import {
+  attachGitHubRepositories,
   extractLinks,
   extractVisibleReasoning,
   isLoggedIn,
@@ -367,6 +368,59 @@ test('project session scraping ignores general chat history', async (t) => {
   } finally {
     await browser.close();
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('GitHub connector selector opens tool menu, searches, and selects exact repository', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const page = await browser.newPage();
+  try {
+    await page.setContent(`
+      <main>
+        <button id="tools" aria-label="Add tools">+</button>
+        <div id="tool-menu" style="display:none">
+          <button id="github">GitHub</button>
+        </div>
+        <div id="github-menu" style="display:none">
+          <input id="repo-search" placeholder="Поиск в репозиториях..." />
+          <button id="repo" style="display:none">AmirTlinov/gpt-pro-cli</button>
+        </div>
+        <div id="selected"></div>
+        <div id="prompt-textarea" contenteditable="true" role="textbox"></div>
+        <script>
+          document.querySelector('#tools').addEventListener('click', () => {
+            document.querySelector('#tool-menu').style.display = 'block';
+          });
+          document.querySelector('#github').addEventListener('click', () => {
+            document.querySelector('#github-menu').style.display = 'block';
+          });
+          document.querySelector('#repo-search').addEventListener('input', (event) => {
+            if (event.target.value === 'AmirTlinov/gpt-pro-cli') {
+              document.querySelector('#repo').style.display = 'block';
+            }
+          });
+          document.querySelector('#repo').addEventListener('click', () => {
+            document.querySelector('#selected').textContent = 'AmirTlinov/gpt-pro-cli';
+          });
+        </script>
+      </main>
+    `);
+
+    const result = await attachGitHubRepositories(page, ['AmirTlinov/gpt-pro-cli']);
+    assert.deepEqual(result, {
+      requested: ['AmirTlinov/gpt-pro-cli'],
+      selected: ['AmirTlinov/gpt-pro-cli'],
+    });
+    assert.equal(await page.locator('#selected').innerText(), 'AmirTlinov/gpt-pro-cli');
+  } finally {
+    await browser.close();
   }
 });
 

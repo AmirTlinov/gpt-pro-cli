@@ -235,7 +235,11 @@ async function handle(req, res) {
         await waitForLoggedIn(page, body.timeoutMs || 60_000, { failFastUnauth: true });
         const previousAnswer = await extractLatestAnswer(page).catch(() => '');
         const previousAssistantCount = await assistantMessageCount(page).catch(() => 0);
-        await submitPrompt(page, { prompt: body.prompt, attachmentPath: body.attachmentPath });
+        const promptSubmission = await submitPrompt(page, {
+          prompt: body.prompt,
+          attachmentPath: body.attachmentPath,
+          githubRepositories: body.githubRepositories || [],
+        });
         const answer = await waitForAnswerStable(page, body.timeoutMs || appSettings.operationTimeoutMs, {
           prompt: body.prompt,
           previousAnswer,
@@ -261,6 +265,7 @@ async function handle(req, res) {
           downloadErrors: answerDownloads.errors,
           url: page.url(),
           project,
+          githubConnector: promptSubmission.githubConnector,
           elapsedMs: Date.now() - startedAt,
           title: await page.title().catch(() => ''),
           latestVisibleAnswer: await extractLatestAnswer(page).catch(() => answer),
