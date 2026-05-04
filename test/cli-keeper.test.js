@@ -11,6 +11,13 @@ import { pathExists } from '../src/fsx.js';
 const execFile = promisify(execFileCallback);
 const cliPath = path.resolve('src/cli.js');
 
+async function profileProcessLines(profileDir) {
+  const { stdout } = await execFile('ps', ['-axo', 'pid=,command=']);
+  return stdout
+    .split('\n')
+    .filter((line) => line.includes(`--user-data-dir=${profileDir}`));
+}
+
 function fakeChatGptServer() {
   let hasProject = false;
   const stableProjectId = 'g-p-69f7c0903ae88191b78a7ca2f00838e0';
@@ -161,6 +168,7 @@ test('CLI ask talks through keeper and stop cleans runtime file', async (t) => {
     const stop = await execFile(process.execPath, [cliPath, 'stop'], { env, timeout: 10_000 });
     assert.match(stop.stdout, /^OK/m);
     assert.equal(await pathExists(path.join(home, 'runtime', 'keeper.json')), false);
+    assert.deepEqual(await profileProcessLines(path.join(home, 'browser-profile')), []);
   } finally {
     await execFile(process.execPath, [cliPath, 'stop'], { env, timeout: 10_000 }).catch(() => {});
     await new Promise((resolve) => server.close(resolve));

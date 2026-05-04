@@ -2,11 +2,13 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execFile as execFileCallback } from 'node:child_process';
+import { promisify } from 'node:util';
 import { paths } from './config.js';
 import { ensureDir, pathExists, readJson } from './fsx.js';
 
 const START_TIMEOUT_MS = 45_000;
+const execFile = promisify(execFileCallback);
 
 export function pidAlive(pid) {
   if (!pid || !Number.isInteger(pid)) return false;
@@ -30,8 +32,10 @@ export async function cleanupStaleRuntime() {
   const runtime = await readRuntime();
   if (!runtime) return { cleaned: false, reason: 'no runtime file' };
   if (pidAlive(runtime.pid)) return { cleaned: false, reason: 'keeper is alive' };
+  const killedProfileProcesses = await cleanupProfileProcesses(runtime.profileDir || paths().profileDir);
   await fsp.rm(paths().runtimeFile, { force: true });
-  return { cleaned: true, reason: 'removed dead keeper runtime file' };
+  const suffix = killedProfileProcesses > 0 ? ` and ${killedProfileProcesses} stale browser profile process(es)` : '';
+  return { cleaned: true, reason: `removed dead keeper runtime file${suffix}` };
 }
 
 export async function keeperRequest(runtime, endpoint, body = {}, timeoutMs = 30_000) {
@@ -79,9 +83,68 @@ async function waitForKeeper(expectedToken) {
   throw new Error(`Timed out starting keeper. Check ${paths().logFile}`);
 }
 
+async function waitForPidExit(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (pidAlive(pid) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return !pidAlive(pid);
+}
+
+async function terminatePid(pid) {
+  if (!pidAlive(pid)) return false;
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {
+    return false;
+  }
+  if (await waitForPidExit(pid, 3000)) return true;
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch {
+    return false;
+  }
+  await waitForPidExit(pid, 2000);
+  return true;
+}
+
+async function profileProcessPids(profileDir) {
+  const profileArg = `--user-data-dir=${path.resolve(profileDir)}`;
+  try {
+    const { stdout } = await execFile('ps', ['-axo', 'pid=,command='], { maxBuffer: 1024 * 1024 });
+    return stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const match = line.match(/^(\d+)\s+(.+)$/);
+        return match ? { pid: Number.parseInt(match[1], 10), command: match[2] } : null;
+      })
+      .filter((entry) => entry && entry.command.includes(profileArg))
+      .map((entry) => entry.pid)
+      .filter((pid) => Number.isInteger(pid) && pid !== process.pid);
+  } catch {
+    return [];
+  }
+}
+
+async function cleanupProfileProcesses(profileDir) {
+  const pids = await profileProcessPids(profileDir);
+  for (const pid of pids) {
+    await terminatePid(pid);
+  }
+  return pids.length;
+}
+
 export async function stopKeeper() {
   const runtime = await readRuntime();
-  if (!runtime) return { stopped: false, reason: 'no runtime file' };
+  if (!runtime) {
+    const killedProfileProcesses = await cleanupProfileProcesses(paths().profileDir);
+    if (killedProfileProcesses > 0) {
+      return { stopped: true, reason: `removed stale browser profile process(es): ${killedProfileProcesses}` };
+    }
+    return { stopped: false, reason: 'no runtime file' };
+  }
   if (pidAlive(runtime.pid)) {
     try {
       await keeperRequest(runtime, '/stop', {}, 5000);
@@ -93,8 +156,13 @@ export async function stopKeeper() {
   while (pidAlive(runtime.pid) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
+  if (pidAlive(runtime.pid)) {
+    await terminatePid(runtime.pid);
+  }
+  const killedProfileProcesses = await cleanupProfileProcesses(runtime.profileDir || paths().profileDir);
   await fsp.rm(paths().runtimeFile, { force: true });
-  return { stopped: true, reason: 'keeper stopped' };
+  const suffix = killedProfileProcesses > 0 ? `; removed stale browser profile process(es): ${killedProfileProcesses}` : '';
+  return { stopped: true, reason: `keeper stopped${suffix}` };
 }
 
 export async function ensureKeeper({ mode } = {}) {
