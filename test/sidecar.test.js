@@ -139,4 +139,29 @@ console.log('url: https://chatgpt.com/c/fake-' + count);
   assert.equal(calls[1].timeout, '456');
   assert.match(calls[1].prompt, /FIRST PASS CONTENT/);
   assert.match(calls[1].prompt, /Extra pressure from Codex/);
+
+  const noPathFakeDir = path.join(temp, 'fake-no-path');
+  await fs.mkdir(noPathFakeDir, { recursive: true });
+  const noPathEnv = {
+    ...process.env,
+    PATH: '',
+    GPT_PRO_BIN: fakeGptPro,
+    GPT_PRO_FAKE_DIR: noPathFakeDir,
+    GPT_PRO_SIDECAR_DIR: path.join(temp, 'runs-no-path'),
+  };
+  const noPathStarted = await runSidecar([
+    'start',
+    '--label',
+    'No Path Probe',
+  ], { env: noPathEnv, input: 'No path prompt' });
+  assert.equal(noPathStarted.code, 0, noPathStarted.stderr);
+  const noPathRunDir = field(noPathStarted.stdout, 'run');
+  assert.ok(noPathRunDir);
+  await waitForFile(path.join(noPathRunDir, 'exit_code'));
+  assert.equal((await fs.readFile(path.join(noPathRunDir, 'exit_code'), 'utf8')).trim(), '0');
+  const noPathCalls = (await fs.readFile(path.join(noPathFakeDir, 'calls.jsonl'), 'utf8'))
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  assert.equal(noPathCalls[0].prompt, 'No path prompt');
 });

@@ -1,5 +1,6 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
+export PATH="${PATH:-/Users/amir/.volta/bin:/Users/amir/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
 
 usage() {
   cat <<'USAGE'
@@ -27,6 +28,26 @@ base_dir() {
   printf '%s\n' "${GPT_PRO_SIDECAR_DIR:-${TMPDIR:-/tmp}/gpt-pro-sidecar}"
 }
 
+resolve_gpt_pro() {
+  if [[ -n "${GPT_PRO_BIN:-}" && -x "${GPT_PRO_BIN}" ]]; then
+    printf '%s\n' "$GPT_PRO_BIN"
+    return 0
+  fi
+  if command -v gpt-pro >/dev/null 2>&1; then
+    command -v gpt-pro
+    return 0
+  fi
+  if [[ -x /Users/amir/.volta/bin/gpt-pro ]]; then
+    printf '%s\n' /Users/amir/.volta/bin/gpt-pro
+    return 0
+  fi
+  if [[ -x /Users/amir/.local/bin/gpt-pro ]]; then
+    printf '%s\n' /Users/amir/.local/bin/gpt-pro
+    return 0
+  fi
+  return 1
+}
+
 start() {
   local label="side-thinking"
   local project="${GPT_PRO_PROJECT:-CLI_QUESTIONS}"
@@ -52,8 +73,9 @@ start() {
     esac
   done
 
-  if ! command -v gpt-pro >/dev/null 2>&1; then
-    echo "ERROR gpt-pro is not available in PATH" >&2
+  local gpt_pro_bin
+  if ! gpt_pro_bin="$(resolve_gpt_pro)"; then
+    echo "ERROR gpt-pro is not available via GPT_PRO_BIN, PATH, or /Users/amir/.volta/bin/gpt-pro" >&2
     exit 127
   fi
 
@@ -68,7 +90,7 @@ start() {
 
   (
     set +e
-    gpt-pro ask --session new --project "$project" --timeout "$timeout" -- "$(cat "$prompt_file")" \
+    "$gpt_pro_bin" ask --session new --project "$project" --timeout "$timeout" -- "$(cat "$prompt_file")" \
       > "$run_dir/stdout.txt" \
       2> "$run_dir/stderr.txt"
     code=$?
@@ -154,8 +176,9 @@ flagship() {
     echo "ERROR run failed: $run_dir" >&2
     exit 3
   fi
-  if ! command -v gpt-pro >/dev/null 2>&1; then
-    echo "ERROR gpt-pro is not available in PATH" >&2
+  local gpt_pro_bin
+  if ! gpt_pro_bin="$(resolve_gpt_pro)"; then
+    echo "ERROR gpt-pro is not available via GPT_PRO_BIN, PATH, or /Users/amir/.volta/bin/gpt-pro" >&2
     exit 127
   fi
 
@@ -187,7 +210,7 @@ $extra_prompt
 PROMPT
 
   set +e
-  gpt-pro ask --session "$url" --project "$project" --timeout "$timeout" -- "$(cat "$prompt_file")" \
+  "$gpt_pro_bin" ask --session "$url" --project "$project" --timeout "$timeout" -- "$(cat "$prompt_file")" \
     > "$out_dir/stdout.txt" \
     2> "$out_dir/stderr.txt"
   local code=$?
