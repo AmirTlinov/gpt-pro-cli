@@ -10,13 +10,13 @@ answer plus files on disk. It is a browser bridge, not an OpenAI API client.
 ## Install
 
 ```sh
-npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.2/gpt-pro-cli-0.1.2.tgz
+npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.3/gpt-pro-cli-0.1.3.tgz
 ```
 
 Or install the same release from the Git tag:
 
 ```sh
-npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.2
+npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.3
 ```
 
 For local development:
@@ -56,9 +56,10 @@ between runs. Message artifacts are stored as:
 ~/gpt-pro/chats/<session>/message-<n>/
 ```
 
-Each message contains `prompt.md`, `answer.md`, `meta.json`, uploaded
-attachments, downloaded answer links/files, and extracted zip contents when
-present.
+Each message contains `prompt.md`, `answer.md`, `meta.json`, `receipt.json`,
+`receipt.md`, uploaded attachments, downloaded answer links/files, and extracted
+zip contents when present. Receipts include hashes, warning counts, and file
+counts so agents can verify local artifacts without trusting terminal output.
 
 `gpt-pro archive` writes portable zip snapshots for the selected ChatGPT project
 to:

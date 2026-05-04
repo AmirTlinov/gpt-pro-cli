@@ -111,8 +111,13 @@ test('CLI ask talks through keeper and stop cleans runtime file', async (t) => {
     assert.match(stdout, /^project: CLI_QUESTIONS$/m);
     assert.match(stdout, /\/g\/g-p-69f7c0903ae88191b78a7ca2f00838e0-cli-questions\/c\/fake-session/);
     const answerPath = stdout.match(/^answer: (.+)$/m)?.[1];
+    const receiptPath = stdout.match(/^receipt: (.+)$/m)?.[1];
     assert.ok(answerPath);
+    assert.ok(receiptPath);
     assert.match(await fs.readFile(answerPath, 'utf8'), /CLI-E2E nonce-keeper/);
+    const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+    assert.equal(receipt.status, 'ok');
+    assert.ok(receipt.files.some((file) => file.path === 'answer.md'));
 
     const latest = await execFile(process.execPath, [
       cliPath,
@@ -139,6 +144,7 @@ test('CLI ask talks through keeper and stop cleans runtime file', async (t) => {
       timeout: 30_000,
     });
     assert.match(smoke.stdout, /^OK/m);
+    assert.match(smoke.stdout, /^receipt: .+receipt\.json$/m);
 
     const archive = await execFile(process.execPath, [
       cliPath,

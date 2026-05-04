@@ -334,7 +334,7 @@ async function runAsk(options) {
     ...savedLinkDownloads.map((download) => download.path),
   ];
   const extractedFiles = await extractDownloadedArchives(finalFilesDir);
-  await writeMessageArtifacts(messageDir, {
+  const artifactReceipt = await writeMessageArtifacts(messageDir, {
     prompt: options.prompt,
     answer: result.answer || result.latestVisibleAnswer || '',
     reasoning: result.reasoning || '',
@@ -374,6 +374,8 @@ async function runAsk(options) {
     answerPath: path.join(messageDir, 'answer.md'),
     filesDir: finalFilesDir,
     messageDir,
+    receiptPath: artifactReceipt.path,
+    receipt: artifactReceipt.receipt,
     result,
     elapsed: formatDuration(result.elapsedMs),
   };
@@ -382,12 +384,15 @@ async function runAsk(options) {
 async function ask(argv) {
   const options = parseAskArgs(argv);
   const output = await runAsk(options);
+  const status = output.receipt?.status === 'ok' ? 'OK' : 'WARN';
   console.log([
-    'OK',
+    status,
     `answer: ${output.answerPath}`,
     `files: ${output.filesDir}`,
+    `receipt: ${output.receiptPath}`,
     `project: ${options.project}`,
     `elapsed: ${output.elapsed}`,
+    `warnings: ${output.receipt?.warnings?.length || 0}`,
     `url: ${output.result.url}`,
   ].join('\n'));
 }
@@ -415,10 +420,17 @@ async function smoke(argv) {
     if (!await pathExists(path.join(output.messageDir, 'meta.json'))) {
       throw new Error('Smoke meta.json was not saved');
     }
+    if (!await pathExists(output.receiptPath)) {
+      throw new Error('Smoke receipt.json was not saved');
+    }
+    if (output.receipt?.status !== 'ok') {
+      throw new Error(`Smoke receipt was not clean: ${(output.receipt?.warnings || []).join('; ')}`);
+    }
     console.log([
       'OK',
       `answer: ${output.answerPath}`,
       `files: ${output.filesDir}`,
+      `receipt: ${output.receiptPath}`,
       `elapsed: ${output.elapsed}`,
       `url: ${output.result.url}`,
     ].join('\n'));

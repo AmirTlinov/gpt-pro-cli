@@ -10,6 +10,7 @@ import {
   readSessionCache,
   resolveSessionFromCache,
   sessionSlugFromUrl,
+  writeMessageArtifacts,
   writeSessionCache,
 } from '../src/artifacts.js';
 import { safeExtractZip, stageAttachment } from '../src/zip.js';
@@ -80,6 +81,65 @@ test('session cache resolves agent-friendly refs', async () => {
   assert.equal(resolveSessionFromCache(cache, 'latest').shortId, 'abcdef12');
   assert.equal(resolveSessionFromCache(cache, '2').shortId, 'bcdef123');
   assert.equal(resolveSessionFromCache(cache, 'abcdef12').title, 'Latest');
+});
+
+test('message artifacts include a verifiable receipt', async () => {
+  const home = await tempHome();
+  process.env.GPT_PRO_HOME = home;
+  const messageDir = await nextMessageDir('receipt-session');
+  await fs.writeFile(path.join(messageDir, 'files', 'artifact.txt'), 'artifact');
+
+  const result = await writeMessageArtifacts(messageDir, {
+    prompt: 'hello',
+    answer: 'world',
+    links: ['https://example.com/file.txt'],
+    downloads: ['/tmp/file.txt'],
+    meta: {
+      command: 'ask',
+      project: 'CLI_QUESTIONS',
+      sessionUrl: 'https://chatgpt.com/g/g-p-demo/c/receipt-session',
+      downloads: ['/tmp/file.txt'],
+      linkDownloads: [],
+      downloadErrors: [],
+      extractedFiles: [],
+      elapsedMs: 1234,
+    },
+  });
+
+  const receipt = JSON.parse(await fs.readFile(result.path, 'utf8'));
+  assert.equal(receipt.status, 'ok');
+  assert.equal(receipt.project, 'CLI_QUESTIONS');
+  assert.equal(receipt.counts.downloads, 1);
+  assert.equal(receipt.warnings.length, 0);
+  assert.ok(receipt.files.some((file) => file.path === 'answer.md' && /^[a-f0-9]{64}$/.test(file.sha256)));
+  assert.ok(receipt.files.some((file) => file.path === 'files/artifact.txt'));
+  assert.match(await fs.readFile(path.join(messageDir, 'receipt.md'), 'utf8'), /status: ok/);
+});
+
+test('message receipt surfaces hidden download failures as warnings', async () => {
+  const home = await tempHome();
+  process.env.GPT_PRO_HOME = home;
+  const messageDir = await nextMessageDir('warning-session');
+
+  const result = await writeMessageArtifacts(messageDir, {
+    prompt: 'hello',
+    answer: 'world',
+    downloads: [{ label: 'report.zip', status: 'failed', error: 'timeout' }],
+    meta: {
+      command: 'ask',
+      project: 'CLI_QUESTIONS',
+      sessionUrl: 'https://chatgpt.com/g/g-p-demo/c/warning-session',
+      downloads: [],
+      linkDownloads: [],
+      downloadErrors: [{ label: 'report.zip', error: 'timeout' }],
+      extractedFiles: [],
+    },
+  });
+
+  const receipt = JSON.parse(await fs.readFile(result.path, 'utf8'));
+  assert.equal(receipt.status, 'warn');
+  assert.equal(receipt.counts.downloadErrors, 1);
+  assert.match(receipt.warnings.join('\n'), /report\.zip/);
 });
 
 test('archive includes project chats, project sessions, and manifest only', async () => {

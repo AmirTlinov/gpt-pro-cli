@@ -1,4 +1,6 @@
+import { createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import AdmZip from 'adm-zip';
 import { paths } from './config.js';
@@ -48,6 +50,105 @@ export async function writeMessageArtifacts(messageDir, data) {
     }).join('\n'));
   }
   await writeJson(path.join(messageDir, 'meta.json'), data.meta || {});
+  const receipt = await writeMessageReceipt(messageDir, data);
+  return receipt;
+}
+
+async function sha256File(file) {
+  const hash = crypto.createHash('sha256');
+  await new Promise((resolve, reject) => {
+    createReadStream(file)
+      .on('data', (chunk) => hash.update(chunk))
+      .on('error', reject)
+      .on('end', resolve);
+  });
+  return hash.digest('hex');
+}
+
+async function listReceiptFiles(root, current = root) {
+  const entries = await fs.readdir(current, { withFileTypes: true }).catch(() => []);
+  const files = [];
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    const absolute = path.join(current, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await listReceiptFiles(root, absolute));
+    } else if (entry.isFile() && !['receipt.json', 'receipt.md'].includes(entry.name)) {
+      const stat = await fs.stat(absolute);
+      files.push({
+        path: path.relative(root, absolute).split(path.sep).join('/'),
+        bytes: stat.size,
+        sha256: await sha256File(absolute),
+      });
+    }
+  }
+  return files;
+}
+
+function receiptWarnings(data) {
+  const warnings = [];
+  const meta = data.meta || {};
+  if (!String(data.answer || '').trim()) warnings.push('answer is empty');
+  for (const item of meta.downloadErrors || []) {
+    warnings.push(`download failed: ${item.label || item.url || 'download'}${item.error ? ` (${item.error.split('\n')[0]})` : ''}`);
+  }
+  if (!meta.project) warnings.push('project is missing in metadata');
+  if (!meta.sessionUrl) warnings.push('session URL is missing in metadata');
+  return warnings;
+}
+
+function receiptMarkdown(receipt) {
+  const lines = [
+    '# gpt-pro receipt',
+    '',
+    `status: ${receipt.status}`,
+    `project: ${receipt.project || ''}`,
+    `session: ${receipt.sessionUrl || ''}`,
+    `created: ${receipt.createdAt}`,
+    `files: ${receipt.counts.files}`,
+    `downloads: ${receipt.counts.downloads}`,
+    `download_errors: ${receipt.counts.downloadErrors}`,
+    `extracted_files: ${receipt.counts.extractedFiles}`,
+    '',
+    '## Warnings',
+  ];
+  lines.push(...(receipt.warnings.length > 0 ? receipt.warnings.map((warning) => `- ${warning}`) : ['- none']));
+  lines.push('', '## Hashes');
+  for (const file of receipt.files) {
+    lines.push(`- ${file.sha256}  ${file.bytes}  ${file.path}`);
+  }
+  return lines.join('\n');
+}
+
+async function writeMessageReceipt(messageDir, data) {
+  const meta = data.meta || {};
+  const files = await listReceiptFiles(messageDir);
+  const warnings = receiptWarnings(data);
+  const receipt = {
+    version: 1,
+    status: warnings.length > 0 ? 'warn' : 'ok',
+    createdAt: new Date().toISOString(),
+    messageDir: path.resolve(messageDir),
+    project: meta.project || null,
+    sessionUrl: meta.sessionUrl || null,
+    command: meta.command || null,
+    elapsedMs: meta.elapsedMs || null,
+    counts: {
+      files: files.length,
+      downloads: Array.isArray(meta.downloads) ? meta.downloads.length : 0,
+      linkDownloads: Array.isArray(meta.linkDownloads) ? meta.linkDownloads.length : 0,
+      downloadErrors: Array.isArray(meta.downloadErrors) ? meta.downloadErrors.length : 0,
+      extractedFiles: Array.isArray(meta.extractedFiles) ? meta.extractedFiles.length : 0,
+    },
+    warnings,
+    files,
+  };
+  await writeJson(path.join(messageDir, 'receipt.json'), receipt);
+  await writeText(path.join(messageDir, 'receipt.md'), receiptMarkdown(receipt));
+  return {
+    path: path.join(messageDir, 'receipt.json'),
+    markdownPath: path.join(messageDir, 'receipt.md'),
+    receipt,
+  };
 }
 
 function sessionCacheFile(projectName) {
