@@ -153,6 +153,37 @@ test('submitPrompt verifies prompt submission and can force-click send', async (
   await browser.close();
 });
 
+test('submitPrompt accepts new ChatGPT UI when generation starts before user prompt is visible', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const page = await browser.newPage();
+  await page.setContent(`
+    <main>
+      <div id="prompt-textarea" contenteditable="true" role="textbox"></div>
+      <button id="composer-submit-button" aria-label="Send message">Send</button>
+      <script>
+        document.querySelector('#composer-submit-button').addEventListener('click', () => {
+          document.querySelector('#prompt-textarea').textContent = '';
+          const button = document.querySelector('#composer-submit-button');
+          button.textContent = '';
+          button.setAttribute('data-testid', 'stop-button');
+          button.setAttribute('aria-label', 'Stop answering');
+        });
+      </script>
+    </main>
+  `);
+
+  await submitPrompt(page, { prompt: 'hidden submitted prompt' });
+  assert.equal(await page.locator('[data-testid="stop-button"]').count(), 1);
+  await browser.close();
+});
+
 test('answer wait ignores an already-stable previous assistant message', async (t) => {
   let browser;
   try {
@@ -258,6 +289,33 @@ test('opens an existing CLI_QUESTIONS project before asking', async (t) => {
     });
     assert.equal(project.created, false);
     assert.match(page.url(), /\/g\/g-p-69f7c0903ae88191b78a7ca2f00838e0-cli-questions\/project$/);
+  } finally {
+    await browser.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('keeps current CLI_QUESTIONS project page even without a sidebar self-link', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const { server, url } = await fakeProjectServer({ hasProject: true });
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${url}/g/g-p-69f7c0903ae88191b78a7ca2f00838e0-cli-questions/project`);
+    const project = await openOrCreateProject(page, {
+      projectName: 'CLI_QUESTIONS',
+      baseUrl: url,
+      timeoutMs: 5000,
+    });
+    assert.equal(project.created, false);
+    assert.equal(project.keptCurrent, false);
+    assert.match(project.projectUrl, /\/g\/g-p-69f7c0903ae88191b78a7ca2f00838e0-cli-questions\/project$/);
   } finally {
     await browser.close();
     await new Promise((resolve) => server.close(resolve));

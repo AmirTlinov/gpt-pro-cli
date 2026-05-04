@@ -10,6 +10,7 @@ const COMPOSER_SELECTORS = [
 
 const SEND_SELECTORS = [
   '[data-testid="send-button"]',
+  '#composer-submit-button:not([data-testid="stop-button"])',
   'button[aria-label*="Send"]',
   'button[aria-label*="send"]',
   'button[aria-label*="Отправ"]',
@@ -64,6 +65,28 @@ function projectKeyFromUrl(value) {
   }
 }
 
+function projectSlugFromName(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function projectUrlFromCurrentUrl(value, projectName = '') {
+  try {
+    const url = new URL(value);
+    const match = url.pathname.match(/^\/g\/([^/]+)(?:\/|$)/);
+    const segment = match?.[1] || '';
+    if (!segment) return '';
+    const slug = projectSlugFromName(projectName);
+    if (projectName && !slug) return '';
+    if (slug && !segment.toLowerCase().includes(slug)) return '';
+    return `${url.origin}/g/${segment}/project`;
+  } catch {
+    return '';
+  }
+}
+
 function isProjectConversationUrl(currentUrl, projectUrl) {
   const key = projectKeyFromUrl(projectUrl);
   if (!key) return false;
@@ -73,6 +96,24 @@ function isProjectConversationUrl(currentUrl, projectUrl) {
   } catch {
     return false;
   }
+}
+
+async function currentProjectUrl(page, projectName) {
+  const bySlug = projectUrlFromCurrentUrl(page.url(), projectName);
+  if (bySlug) return bySlug;
+
+  return page.evaluate((wantedName) => {
+    function normalized(value) {
+      return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+
+    const match = window.location.pathname.match(/^\/g\/([^/]+)(?:\/|$)/);
+    if (!match) return '';
+    const wanted = normalized(wantedName);
+    const headings = Array.from(document.querySelectorAll('h1,h2,[data-testid*="project"],[aria-label*="project"],[aria-label*="Project"]'));
+    const hasName = headings.some((node) => normalized(node.innerText || node.textContent || node.getAttribute('aria-label')) === wanted);
+    return hasName ? `${window.location.origin}/g/${match[1]}/project` : '';
+  }, projectName);
 }
 
 async function clickVisibleControlByText(page, labels) {
@@ -223,6 +264,31 @@ export async function openOrCreateProject(page, { projectName, baseUrl, timeoutM
     await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   }
   await waitForLoggedIn(page, timeoutMs, { failFastUnauth: true });
+
+  const currentUrl = await currentProjectUrl(page, projectName);
+  if (currentUrl) {
+    if (keepCurrent && isProjectConversationUrl(page.url(), currentUrl)) {
+      await waitForComposer(page, 60_000);
+      return {
+        created: false,
+        keptCurrent: true,
+        projectName,
+        projectUrl: currentUrl,
+      };
+    }
+    if (page.url() !== currentUrl) {
+      await page.goto(currentUrl, { waitUntil: 'domcontentloaded' });
+      await waitForLoggedIn(page, timeoutMs, { failFastUnauth: true });
+    }
+    await waitForComposer(page, 60_000);
+    return {
+      created: false,
+      keptCurrent: false,
+      projectName,
+      projectUrl: page.url(),
+    };
+  }
+
   await ensureProjectControlsVisible(page, projectName);
 
   let projectUrl = await findProjectUrl(page, projectName);
@@ -431,12 +497,34 @@ export async function waitForUserPromptVisible(page, prompt, timeoutMs = 10_000)
   const deadline = Date.now() + timeoutMs;
   const expected = String(prompt || '').replace(/\s+/g, ' ').trim().slice(0, 200);
   while (Date.now() < deadline) {
-    const found = await page.evaluate((value) => {
-      const normalized = (text) => String(text || '').replace(/\s+/g, ' ').trim();
-      return Array.from(document.querySelectorAll('[data-message-author-role="user"],[data-testid="user-message"],[data-gpt-pro-user]'))
-        .some((node) => normalized(node.innerText || node.textContent).includes(value));
-    }, expected);
-    if (found) return true;
+    if (await isUserPromptVisible(page, expected)) return true;
+    await page.waitForTimeout(500);
+  }
+  return false;
+}
+
+async function isUserPromptVisible(page, expected) {
+  return page.evaluate((value) => {
+    const normalized = (text) => String(text || '').replace(/\s+/g, ' ').trim();
+    return Array.from(document.querySelectorAll('[data-message-author-role="user"],[data-testid="user-message"],[data-gpt-pro-user]'))
+      .some((node) => normalized(node.innerText || node.textContent).includes(value));
+  }, expected);
+}
+
+async function composerText(locator) {
+  return locator.evaluate((element) => (element.innerText || element.textContent || element.value || '').replace(/\s+/g, ' ').trim());
+}
+
+async function waitForPromptAccepted(page, composer, prompt, timeoutMs = 8000) {
+  const deadline = Date.now() + timeoutMs;
+  const expected = String(prompt || '').replace(/\s+/g, ' ').trim();
+  const probe = expected.slice(0, 200);
+  const shortProbe = expected.slice(0, 50);
+  while (Date.now() < deadline) {
+    if (await isUserPromptVisible(page, probe)) return true;
+    if (await isGenerating(page)) return true;
+    const current = await composerText(composer).catch(() => '');
+    if (shortProbe && !current.includes(shortProbe)) return true;
     await page.waitForTimeout(500);
   }
   return false;
@@ -455,15 +543,15 @@ export async function submitPrompt(page, { prompt, attachmentPath }) {
     await page.waitForTimeout(1000);
   }
   await clickSend(page);
-  if (!await waitForUserPromptVisible(page, prompt, 5000)) {
+  if (!await waitForPromptAccepted(page, composer, prompt, 5000)) {
     await composer.evaluate((element) => {
       element.scrollIntoView({ block: 'center', inline: 'nearest' });
       element.focus();
     }).catch(() => {});
     await page.keyboard.press('Enter');
-    if (!await waitForUserPromptVisible(page, prompt, 5000)) {
+    if (!await waitForPromptAccepted(page, composer, prompt, 5000)) {
       await clickSend(page);
-      if (!await waitForUserPromptVisible(page, prompt, 5000)) {
+      if (!await waitForPromptAccepted(page, composer, prompt, 5000)) {
         throw new Error('Prompt was not submitted to ChatGPT');
       }
     }

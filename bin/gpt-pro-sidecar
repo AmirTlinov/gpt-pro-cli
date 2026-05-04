@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+gpt-pro-sidecar
+
+Commands:
+  gpt-pro-sidecar start [--label <name>] [--project CLI_QUESTIONS] [--timeout <ms>]
+  gpt-pro-sidecar flagship <run-dir> [--project CLI_QUESTIONS] [--timeout <ms>]
+  gpt-pro-sidecar status <run-dir>
+  gpt-pro-sidecar show <run-dir>
+
+`start` reads the GPT-PRO prompt from stdin and returns immediately.
+`flagship` waits for an existing run and sends a final strengthening prompt to the same chat.
+USAGE
+}
+
+slug() {
+  printf '%s' "${1:-run}" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//' \
+    | cut -c1-80
+}
+
+base_dir() {
+  printf '%s\n' "${GPT_PRO_SIDECAR_DIR:-${TMPDIR:-/tmp}/gpt-pro-sidecar}"
+}
+
+start() {
+  local label="side-thinking"
+  local project="${GPT_PRO_PROJECT:-CLI_QUESTIONS}"
+  local timeout="${GPT_PRO_SIDE_TIMEOUT_MS:-900000}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --label)
+        label="${2:?missing --label value}"
+        shift 2
+        ;;
+      --project)
+        project="${2:?missing --project value}"
+        shift 2
+        ;;
+      --timeout)
+        timeout="${2:?missing --timeout value}"
+        shift 2
+        ;;
+      *)
+        echo "ERROR unknown start option: $1" >&2
+        exit 2
+        ;;
+    esac
+  done
+
+  if ! command -v gpt-pro >/dev/null 2>&1; then
+    echo "ERROR gpt-pro is not available in PATH" >&2
+    exit 127
+  fi
+
+  local root run_dir prompt_file
+  root="$(base_dir)"
+  mkdir -p "$root"
+  run_dir="$root/$(date -u +%Y%m%dT%H%M%SZ)-$(slug "$label")-$$"
+  mkdir -p "$run_dir"
+  prompt_file="$run_dir/prompt.md"
+  cat > "$prompt_file"
+  date -u +"%Y-%m-%dT%H:%M:%SZ" > "$run_dir/started_at"
+
+  (
+    set +e
+    gpt-pro ask --session new --project "$project" --timeout "$timeout" -- "$(cat "$prompt_file")" \
+      > "$run_dir/stdout.txt" \
+      2> "$run_dir/stderr.txt"
+    code=$?
+    printf '%s\n' "$code" > "$run_dir/exit_code"
+    date -u +"%Y-%m-%dT%H:%M:%SZ" > "$run_dir/finished_at"
+  ) </dev/null >/dev/null 2>/dev/null &
+  local child_pid=$!
+  disown "$child_pid" 2>/dev/null || true
+
+  printf '%s\n' "$child_pid" > "$run_dir/pid"
+  cat <<OUT
+OK
+run: $run_dir
+pid: $child_pid
+status: running
+OUT
+}
+
+status() {
+  local run_dir="${1:?missing run-dir}"
+  local pid=""
+  [[ -f "$run_dir/pid" ]] && pid="$(cat "$run_dir/pid")"
+  if [[ -f "$run_dir/exit_code" ]]; then
+    cat <<OUT
+DONE
+run: $run_dir
+exit: $(cat "$run_dir/exit_code")
+stdout: $run_dir/stdout.txt
+stderr: $run_dir/stderr.txt
+OUT
+    return
+  fi
+  if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
+    cat <<OUT
+RUNNING
+run: $run_dir
+pid: $pid
+OUT
+    return
+  fi
+  cat <<OUT
+UNKNOWN
+run: $run_dir
+stdout: $run_dir/stdout.txt
+stderr: $run_dir/stderr.txt
+OUT
+}
+
+field_from_stdout() {
+  local run_dir="${1:?missing run-dir}"
+  local field="${2:?missing field}"
+  [[ -f "$run_dir/stdout.txt" ]] || return 1
+  awk -F': ' -v key="$field" '$1 == key {print substr($0, length(key) + 3); exit}' "$run_dir/stdout.txt"
+}
+
+flagship() {
+  local run_dir="${1:?missing run-dir}"
+  shift || true
+  local project="${GPT_PRO_PROJECT:-CLI_QUESTIONS}"
+  local timeout="${GPT_PRO_SIDE_TIMEOUT_MS:-900000}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --project)
+        project="${2:?missing --project value}"
+        shift 2
+        ;;
+      --timeout)
+        timeout="${2:?missing --timeout value}"
+        shift 2
+        ;;
+      *)
+        echo "ERROR unknown flagship option: $1" >&2
+        exit 2
+        ;;
+    esac
+  done
+
+  if [[ ! -f "$run_dir/exit_code" ]]; then
+    echo "ERROR run is not done yet: $run_dir" >&2
+    exit 3
+  fi
+  if [[ "$(cat "$run_dir/exit_code")" != "0" ]]; then
+    echo "ERROR run failed: $run_dir" >&2
+    exit 3
+  fi
+  if ! command -v gpt-pro >/dev/null 2>&1; then
+    echo "ERROR gpt-pro is not available in PATH" >&2
+    exit 127
+  fi
+
+  local url answer_file first_answer extra_prompt out_dir prompt_file
+  url="$(field_from_stdout "$run_dir" "url" || true)"
+  answer_file="$(field_from_stdout "$run_dir" "answer" || true)"
+  if [[ -z "$url" ]]; then
+    echo "ERROR could not find url in $run_dir/stdout.txt" >&2
+    exit 3
+  fi
+  if [[ -n "$answer_file" && -f "$answer_file" ]]; then
+    first_answer="$(cat "$answer_file")"
+  else
+    first_answer="$(cat "$run_dir/stdout.txt")"
+  fi
+  extra_prompt="$(cat)"
+  out_dir="$run_dir/flagship-$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -p "$out_dir"
+  prompt_file="$out_dir/prompt.md"
+  cat > "$prompt_file" <<PROMPT
+You previously gave this answer:
+
+$first_answer
+
+Now do a final flagship pass. Do not merely rephrase. Find the strongest missing distinctions, hidden risks, oversights, and weak spots. Produce the best complete final answer that can survive skeptical implementation/review.
+
+Additional direction from the Codex agent:
+$extra_prompt
+PROMPT
+
+  set +e
+  gpt-pro ask --session "$url" --project "$project" --timeout "$timeout" -- "$(cat "$prompt_file")" \
+    > "$out_dir/stdout.txt" \
+    2> "$out_dir/stderr.txt"
+  local code=$?
+  set -e
+  printf '%s\n' "$code" > "$out_dir/exit_code"
+  date -u +"%Y-%m-%dT%H:%M:%SZ" > "$out_dir/finished_at"
+  cat <<OUT
+DONE
+run: $out_dir
+exit: $code
+stdout: $out_dir/stdout.txt
+stderr: $out_dir/stderr.txt
+OUT
+  return "$code"
+}
+
+show() {
+  local run_dir="${1:?missing run-dir}"
+  echo "== status =="
+  status "$run_dir"
+  echo
+  echo "== stdout =="
+  [[ -f "$run_dir/stdout.txt" ]] && cat "$run_dir/stdout.txt" || true
+  echo
+  echo "== stderr =="
+  [[ -f "$run_dir/stderr.txt" ]] && cat "$run_dir/stderr.txt" || true
+}
+
+case "${1:-}" in
+  start)
+    shift
+    start "$@"
+    ;;
+  flagship)
+    shift
+    flagship "$@"
+    ;;
+  status)
+    shift
+    status "$@"
+    ;;
+  show)
+    shift
+    show "$@"
+    ;;
+  --help|-h|'')
+    usage
+    ;;
+  *)
+    echo "ERROR unknown command: $1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

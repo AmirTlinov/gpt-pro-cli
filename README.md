@@ -10,13 +10,13 @@ answer plus files on disk. It is a browser bridge, not an OpenAI API client.
 ## Install
 
 ```sh
-npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.6/gpt-pro-cli-0.1.6.tgz
+npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.7/gpt-pro-cli-0.1.7.tgz
 ```
 
 Or install the same release from the Git tag:
 
 ```sh
-npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.6
+npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.7
 ```
 
 For local development:
@@ -47,6 +47,19 @@ gpt-pro archive
 gpt-pro archive --delete-local
 gpt-pro stop
 ```
+
+Agents can also use the bundled sidecar helper for quiet parallel thinking:
+
+```sh
+printf '%s\n' "Question for GPT PRO" | gpt-pro-sidecar start --label side-thinking
+gpt-pro-sidecar status <run-dir>
+printf '%s\n' "Final pressure" | gpt-pro-sidecar flagship <run-dir>
+```
+
+`gpt-pro-sidecar start` returns a run directory immediately. `flagship` waits for
+the first completed run output and asks the same ChatGPT thread for a final
+strengthening pass, so agent workflows can use GPT PRO without turning the chat
+into manual copy/paste.
 
 ## Files
 
