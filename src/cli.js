@@ -384,6 +384,14 @@ function formatKeeperStatus(status) {
     lines.push('task: none');
   }
   if (page?.blocker) lines.push(`blocker: ${page.blocker.code} ${compactLine(page.blocker.message, 220)}`);
+  if (page?.auth) {
+    const authState = page.auth.loggedIn
+      ? 'logged-in'
+      : page.auth.hasUnauthAction
+        ? 'needs-login'
+        : 'unknown';
+    lines.push(`auth: ${authState} composer=${Boolean(page.auth.hasComposer)} actions=${(page.auth.unauthActions || []).join(', ') || 'none'}`);
+  }
   if (typeof page?.generating === 'boolean') lines.push(`generating: ${page.generating}`);
   if (page?.reasoningPreview) lines.push(`thinking: ${compactLine(page.reasoningPreview, 300)}`);
   if (page?.answerPreview) lines.push(`answer-preview: ${compactLine(page.answerPreview, 300)}`);
@@ -403,6 +411,10 @@ function formatProgressLine(status) {
   ];
   if (typeof page.generating === 'boolean') parts.push(`generating=${page.generating}`);
   if (page.blocker?.code) parts.push(`blocker=${page.blocker.code}`);
+  if (page.auth && !page.auth.loggedIn) {
+    const authState = page.auth.hasUnauthAction ? 'needs-login' : 'unknown';
+    parts.push(`auth=${authState}`);
+  }
   const thought = page.reasoningPreview || page.answerPreview || '';
   if (thought) parts.push(`thinking="${compactLine(thought, 180).replace(/"/g, "'")}"`);
   if (page.url) parts.push(`url=${page.url}`);
@@ -418,6 +430,13 @@ function progressSignature(status) {
     phase: task.phase || task.state || 'running',
     generating: typeof page.generating === 'boolean' ? page.generating : null,
     blocker: page.blocker?.code || null,
+    auth: page.auth?.loggedIn
+      ? 'logged-in'
+      : page.auth?.hasUnauthAction
+        ? 'needs-login'
+        : page.auth
+          ? 'unknown'
+          : null,
     thought: compactLine(thought, 180),
     url: page.url || null,
   });

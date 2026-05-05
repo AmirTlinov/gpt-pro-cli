@@ -1760,6 +1760,7 @@ export async function extractVisibleReasoning(page) {
 export async function extractLiveStatus(page, options = {}) {
   const blocker = await detectChatGptBlocker(page);
   const generating = await isGenerating(page);
+  const auth = await authSnapshot(page).catch(() => null);
   const reasoning = await extractVisibleReasoning(page).catch(() => '');
   const answer = await (options.prompt
     ? extractLatestAnswerAfterPrompt(page, options.prompt)
@@ -1768,6 +1769,7 @@ export async function extractLiveStatus(page, options = {}) {
     url: page.url(),
     generating,
     blocker,
+    auth,
     reasoning,
     reasoningPreview: reasoning.replace(/\s+/g, ' ').trim().slice(0, 500),
     answerPreview: answer.replace(/\s+/g, ' ').trim().slice(0, 500),
