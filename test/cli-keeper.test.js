@@ -157,6 +157,7 @@ test('CLI ask cleans pending runtime artifacts when attachment staging fails', a
   const receipt = JSON.parse(await fs.readFile(failureReceipt, 'utf8'));
   assert.equal(receipt.status, 'warn');
   assert.ok(receipt.warnings.includes('answer is empty'));
+  assert.ok(receipt.warnings.some((warning) => warning.startsWith('ask failed:')));
 });
 
 test('concurrent CLI asks use one serialized keeper without mixed prompts', async (t) => {

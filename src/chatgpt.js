@@ -79,6 +79,32 @@ const OPEN_SIDEBAR_LABELS = [
   'Открыть боковую панель',
 ];
 
+const BLOCKER_PATTERNS = [
+  {
+    code: 'rate_limited',
+    patterns: [
+      /too many requests/i,
+      /temporar(?:y|ily) (?:restricted|limited)/i,
+      /access to your (?:chats|conversations|dialogs).{0,80}temporar/i,
+      /слишком много запросов/i,
+      /доступ к (?:вашим )?(?:диалогам|чатам).{0,80}временно ограничен/i,
+      /подождите несколько минут/i,
+    ],
+    message: 'ChatGPT is temporarily rate-limited: too many requests / dialog access is temporarily restricted. Wait a few minutes and retry.',
+  },
+  {
+    code: 'human_verification',
+    patterns: [
+      /verify you are human/i,
+      /are you human/i,
+      /captcha/i,
+      /проверьте,? что вы человек/i,
+      /подтвердите,? что вы человек/i,
+    ],
+    message: 'ChatGPT requires manual human verification. Run "gpt-pro login", solve the browser challenge, then retry.',
+  },
+];
+
 function projectKeyFromUrl(value) {
   try {
     const url = new URL(value);
@@ -110,6 +136,74 @@ function projectUrlFromCurrentUrl(value, projectName = '') {
   } catch {
     return '';
   }
+}
+
+export async function detectChatGptBlocker(page) {
+  let snapshot = null;
+  try {
+    snapshot = await page.evaluate(() => {
+      function visible(node) {
+        const style = window.getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+      }
+
+      const composerSelectors = [
+        '[contenteditable="true"][role="textbox"]',
+        '[contenteditable="true"]',
+        '#prompt-textarea',
+        '[data-testid="prompt-textarea"]',
+        'textarea',
+      ];
+      const hasVisibleComposer = composerSelectors.some((selector) => (
+        Array.from(document.querySelectorAll(selector)).some(visible)
+      ));
+      const modalNodes = Array.from(document.querySelectorAll([
+        '[role="dialog"]',
+        '[aria-modal="true"]',
+        '[data-testid*="modal"]',
+        '[data-radix-dialog-content]',
+        '[class*="modal" i]',
+        '[class*="dialog" i]',
+        '[class*="toast" i]',
+      ].join(',')));
+      const fullPageNodes = hasVisibleComposer ? [] : Array.from(document.querySelectorAll([
+        'body',
+        'main',
+      ].join(',')));
+
+      const text = [...modalNodes, ...fullPageNodes]
+        .filter((node) => node === document.body || visible(node))
+        .map((node) => node.innerText || node.textContent || '')
+        .join('\n')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 4000);
+      return { text, url: window.location.href };
+    });
+  } catch {
+    return null;
+  }
+
+  const text = snapshot?.text || '';
+  for (const blocker of BLOCKER_PATTERNS) {
+    if (blocker.patterns.some((pattern) => pattern.test(text))) {
+      return {
+        code: blocker.code,
+        message: blocker.message,
+        url: snapshot.url || page.url(),
+        text: text.slice(0, 500),
+      };
+    }
+  }
+  return null;
+}
+
+export async function assertNoChatGptBlocker(page) {
+  const blocker = await detectChatGptBlocker(page);
+  if (!blocker) return;
+  const detail = blocker.text ? ` visible="${blocker.text}"` : '';
+  throw new Error(`${blocker.message} url=${blocker.url}; blocker=${blocker.code}.${detail}`);
 }
 
 function isProjectConversationUrl(currentUrl, projectUrl) {
@@ -1154,6 +1248,7 @@ export async function waitForComposer(page, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
   let lastError = null;
   while (Date.now() < deadline) {
+    await assertNoChatGptBlocker(page);
     for (const selector of COMPOSER_SELECTORS) {
       try {
         const matches = page.locator(selector);
@@ -1252,6 +1347,7 @@ export async function waitForLoggedIn(page, timeoutMs = 10 * 60_000, options = {
   const deadline = Date.now() + timeoutMs;
   let lastSnapshot = null;
   while (Date.now() < deadline) {
+    await assertNoChatGptBlocker(page);
     lastSnapshot = await authSnapshot(page);
     if (lastSnapshot.loggedIn) return true;
     if (options.failFastUnauth && lastSnapshot.hasUnauthAction) {
@@ -1356,6 +1452,7 @@ async function waitForPromptAccepted(page, composer, prompt, timeoutMs = 8000) {
   const shortProbe = expected.slice(0, 50);
   const shortProbeCompact = shortProbe.replace(/\s+/g, '');
   while (Date.now() < deadline) {
+    await assertNoChatGptBlocker(page);
     if (await isUserPromptVisible(page, probe)) return true;
     if (await isGenerating(page)) return true;
     const current = await composerText(composer).catch(() => '');
@@ -1367,6 +1464,7 @@ async function waitForPromptAccepted(page, composer, prompt, timeoutMs = 8000) {
 
 export async function submitPrompt(page, { prompt, attachmentPath, githubRepositories = [] }) {
   await ensureUsableViewport(page);
+  await assertNoChatGptBlocker(page);
   let composer = await waitForComposer(page);
   await composer.evaluate((element) => {
     element.scrollIntoView({ block: 'center', inline: 'nearest' });
@@ -1401,20 +1499,26 @@ export async function submitPrompt(page, { prompt, attachmentPath, githubReposit
 
   try {
     composer = await waitForComposer(page);
+    await assertNoChatGptBlocker(page);
     await setComposerText(page, composer, prompt);
     await page.waitForTimeout(500);
+    await assertNoChatGptBlocker(page);
     if (attachmentPath) {
       await attachFile(page, attachmentPath);
       await page.waitForTimeout(1000);
+      await assertNoChatGptBlocker(page);
     }
+    await assertNoChatGptBlocker(page);
     await clickSend(page);
     if (!await waitForPromptAccepted(page, composer, prompt, 5000)) {
       await composer.evaluate((element) => {
         element.scrollIntoView({ block: 'center', inline: 'nearest' });
         element.focus();
       }).catch(() => {});
+      await assertNoChatGptBlocker(page);
       await page.keyboard.press('Enter');
       if (!await waitForPromptAccepted(page, composer, prompt, 5000)) {
+        await assertNoChatGptBlocker(page);
         await clickSend(page);
         if (!await waitForPromptAccepted(page, composer, prompt, 5000)) {
           throw new Error('Prompt was not submitted to ChatGPT');
@@ -1584,6 +1688,7 @@ export async function waitForAnswerStable(page, timeoutMs, options = {}) {
     ? options.previousAssistantCount
     : null;
   while (Date.now() < deadline) {
+    await assertNoChatGptBlocker(page);
     const answer = options.prompt
       ? await extractLatestAnswerAfterPrompt(page, options.prompt)
       : await extractLatestAnswer(page);

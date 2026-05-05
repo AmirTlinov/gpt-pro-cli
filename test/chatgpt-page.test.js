@@ -5,6 +5,7 @@ import { chromium } from 'playwright';
 import {
   attachGitHubRepositories,
   cleanupGitHubRepositorySelections,
+  detectChatGptBlocker,
   extractLinks,
   extractVisibleReasoning,
   isLoggedIn,
@@ -12,6 +13,7 @@ import {
   scrapeSessions,
   submitPrompt,
   waitForAnswerStable,
+  waitForLoggedIn,
   waitForUserPromptVisible,
 } from '../src/chatgpt.js';
 
@@ -1416,5 +1418,97 @@ test('auth detection rejects anonymous composer with login actions', async (t) =
   `);
 
   assert.equal(await isLoggedIn(page), false);
+  await browser.close();
+});
+
+test('ChatGPT temporary request limit fails fast before prompt work', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const page = await browser.newPage();
+  await page.setContent(`
+    <main>
+      <div id="prompt-textarea" contenteditable="true" role="textbox"></div>
+      <div role="dialog" aria-modal="true">
+        <h2>Слишком много запросов</h2>
+        <p>Вы отправляете запросы слишком часто. Доступ к вашим диалогам временно ограничен в целях защиты данных.</p>
+        <p>Подождите несколько минут и повторите попытку.</p>
+        <button>Понятно</button>
+      </div>
+    </main>
+  `);
+
+  const blocker = await detectChatGptBlocker(page);
+  assert.equal(blocker.code, 'rate_limited');
+  await assert.rejects(
+    waitForLoggedIn(page, 30_000, { failFastUnauth: true }),
+    /temporarily rate-limited|blocker=rate_limited/,
+  );
+  await assert.rejects(
+    submitPrompt(page, { prompt: 'must not be sent' }),
+    /temporarily rate-limited|blocker=rate_limited/,
+  );
+  await browser.close();
+});
+
+test('ChatGPT blocker detection ignores ordinary chat text', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const page = await browser.newPage();
+  await page.setContent(`
+    <main>
+      <div id="prompt-textarea" contenteditable="true" role="textbox"></div>
+      <article data-message-author-role="assistant">
+        The error text "too many requests" or "captcha" can appear inside a normal review answer.
+      </article>
+    </main>
+  `);
+
+  assert.equal(await detectChatGptBlocker(page), null);
+  await browser.close();
+});
+
+test('submitPrompt stops if a ChatGPT blocker appears after text entry', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const page = await browser.newPage();
+  await page.setContent(`
+    <main>
+      <div id="prompt-textarea" contenteditable="true" role="textbox"></div>
+      <button data-testid="send-button" onclick="window.sent = (window.sent || 0) + 1">Send</button>
+      <div id="modal"></div>
+      <script>
+        window.sent = 0;
+        const prompt = document.querySelector('#prompt-textarea');
+        const modal = document.querySelector('#modal');
+        new MutationObserver(() => {
+          modal.innerHTML = '<div role="dialog" aria-modal="true"><h2>Too many requests</h2><p>Access to your chats is temporarily restricted.</p></div>';
+        }).observe(prompt, { childList: true, characterData: true, subtree: true });
+      </script>
+    </main>
+  `);
+
+  await assert.rejects(
+    submitPrompt(page, { prompt: 'do not send after blocker appears' }),
+    /temporarily rate-limited|blocker=rate_limited/,
+  );
+  assert.equal(await page.evaluate(() => window.sent), 0);
   await browser.close();
 });

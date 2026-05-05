@@ -10,13 +10,13 @@ answer plus files on disk. It is a browser bridge, not an OpenAI API client.
 ## Install
 
 ```sh
-npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.23/gpt-pro-cli-0.1.23.tgz
+npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.24/gpt-pro-cli-0.1.24.tgz
 ```
 
 Or install the same release from the Git tag:
 
 ```sh
-npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.23
+npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.24
 ```
 
 For local development:
@@ -120,6 +120,12 @@ Failed asks also write a local failure receipt and print its path under
 `failure:`. That means an agent can inspect the exact prompt, requested project,
 GitHub repo request, and warning state even when ChatGPT login, connector
 selection, attachment staging, or answer stabilization fails.
+
+If ChatGPT shows a temporary protection screen such as “Too many requests” /
+“Слишком много запросов”, or a human-verification challenge, the CLI fails fast
+instead of retrying in a loop or submitting another prompt. The failure receipt
+keeps the prompt and request metadata; wait for ChatGPT to lift the limit or run
+`gpt-pro login` for manual recovery, then retry once.
 
 `gpt-pro archive` writes portable zip snapshots for the selected ChatGPT project
 to:

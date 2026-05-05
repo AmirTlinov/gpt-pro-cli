@@ -96,6 +96,7 @@ function receiptWarnings(data) {
   const warnings = [];
   const meta = data.meta || {};
   if (!String(data.answer || '').trim()) warnings.push('answer is empty');
+  if (meta.failed && meta.error) warnings.push(`ask failed: ${String(meta.error).split('\n')[0]}`);
   for (const item of meta.downloadErrors || []) {
     warnings.push(`download failed: ${item.label || item.url || 'download'}${item.error ? ` (${item.error.split('\n')[0]})` : ''}`);
   }
