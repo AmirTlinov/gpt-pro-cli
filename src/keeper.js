@@ -5,8 +5,10 @@ import net from 'node:net';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { chromium } from 'playwright';
+import { chromeLaunchArgs } from './browser-launch.js';
 import { PACKAGE_VERSION, paths, settings } from './config.js';
 import { ensureDir, writeJson } from './fsx.js';
+import { cleanupProfileProcesses } from './runtime.js';
 import { downloadAnswerArtifacts } from './downloads.js';
 import {
   downloadTarget,
@@ -76,23 +78,7 @@ function browserBackingAlive() {
   } catch {
     return false;
   }
-  if (mode === 'headed' || mode === 'background') {
-    return Boolean(chromeProcess?.pid && processAlive(chromeProcess.pid));
-  }
-  return true;
-}
-
-function browserLaunchOptions() {
-  const options = {
-    headless: mode !== 'headed',
-    acceptDownloads: true,
-    downloadsPath: path.join(rootPaths.runtimeDir, 'downloads'),
-    args: ['--no-first-run', '--disable-dev-shm-usage'],
-  };
-  if (appSettings.browserChannel && appSettings.browserChannel !== 'chromium') {
-    options.channel = appSettings.browserChannel;
-  }
-  return options;
+  return Boolean(chromeProcess?.pid && processAlive(chromeProcess.pid));
 }
 
 async function freePort() {
@@ -103,10 +89,11 @@ async function freePort() {
   return port;
 }
 
-async function waitForCdp(port) {
+async function waitForCdp(port, { isProcessExited = () => false } = {}) {
   const deadline = Date.now() + 45_000;
   let lastError = null;
   while (Date.now() < deadline) {
+    if (isProcessExited()) throw new Error(`Chrome exited before DevTools port ${port} became reachable`);
     try {
       const response = await fetch(`http://127.0.0.1:${port}/json/version`);
       if (response.ok) return;
@@ -118,43 +105,53 @@ async function waitForCdp(port) {
   throw new Error(`Timed out waiting for Chrome DevTools port ${port}${lastError ? `: ${lastError.message}` : ''}`);
 }
 
-async function launchHumanChrome() {
+async function launchChromeWithCdp() {
   await ensureDir(rootPaths.profileDir);
   await ensureDir(rootPaths.runtimeDir);
-  const port = await freePort();
   const chromePath = process.env.GPT_PRO_CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-  const windowArgs = mode === 'background'
-    ? ['--window-size=1440,1000', '--window-position=0,0']
-    : ['--window-size=1440,1000'];
-  chromeProcess = spawn(chromePath, [
-    `--remote-debugging-port=${port}`,
-    `--user-data-dir=${rootPaths.profileDir}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-dev-shm-usage',
-    ...windowArgs,
-    appSettings.baseUrl,
-  ], {
-    stdio: 'ignore',
-  });
-  chromeProcess.once('exit', () => {
-    chromeProcess = null;
-  });
-  await waitForCdp(port);
-  browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
-  context = browser.contexts()[0];
-  if (!context) throw new Error('Chrome DevTools connection did not expose a browser context');
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    await cleanupProfileProcesses(rootPaths.profileDir);
+    const port = await freePort();
+    let exited = false;
+    chromeProcess = spawn(chromePath, chromeLaunchArgs({
+      port,
+      profileDir: rootPaths.profileDir,
+      mode,
+      baseUrl: appSettings.baseUrl,
+    }), { stdio: 'ignore' });
+    chromeProcess.once('exit', () => {
+      exited = true;
+      chromeProcess = null;
+    });
+
+    try {
+      await waitForCdp(port, { isProcessExited: () => exited });
+      browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+      context = browser.contexts()[0];
+      if (!context) throw new Error('Chrome DevTools connection did not expose a browser context');
+      return;
+    } catch (error) {
+      lastError = error;
+      if (chromeProcess?.pid) {
+        chromeProcess.kill('SIGTERM');
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        if (chromeProcess?.pid) chromeProcess.kill('SIGKILL');
+      }
+      chromeProcess = null;
+      context = null;
+      browser = null;
+      await cleanupProfileProcesses(rootPaths.profileDir);
+    }
+  }
+
+  throw lastError || new Error('Chrome did not start');
 }
 
 async function browserPage() {
   if (!context) {
-    if (mode === 'headed' || mode === 'background') {
-      await launchHumanChrome();
-    } else {
-      await ensureDir(rootPaths.profileDir);
-      await ensureDir(rootPaths.runtimeDir);
-      context = await chromium.launchPersistentContext(rootPaths.profileDir, browserLaunchOptions());
-    }
+    await launchChromeWithCdp();
   }
   if (activePage && !activePage.isClosed()) {
     await activePage.setViewportSize({ width: 1440, height: 1000 }).catch(() => {});

@@ -194,7 +194,7 @@ async function profileProcessPids(profileDir) {
   }
 }
 
-async function cleanupProfileProcesses(profileDir) {
+export async function cleanupProfileProcesses(profileDir) {
   const killed = new Set();
   for (let round = 0; round < 5; round += 1) {
     const pids = await profileProcessPids(profileDir);

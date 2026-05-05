@@ -29,7 +29,6 @@ export function paths() {
 export function settings() {
   return {
     baseUrl: process.env.GPT_PRO_CHATGPT_URL || 'https://chatgpt.com',
-    browserChannel: process.env.GPT_PRO_BROWSER_CHANNEL || 'chrome',
     browserMode: process.env.GPT_PRO_BROWSER_MODE || 'background',
     projectName: process.env.GPT_PRO_PROJECT || DEFAULT_PROJECT_NAME,
     idleMs: Number.parseInt(process.env.GPT_PRO_IDLE_MS || `${DEFAULT_IDLE_MS}`, 10),
