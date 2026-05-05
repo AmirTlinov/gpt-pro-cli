@@ -7,6 +7,7 @@ const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import
 export const PACKAGE_VERSION = packageJson.version;
 export const DEFAULT_IDLE_MS = 20 * 60 * 1000;
 export const DEFAULT_PROJECT_NAME = 'CLI_QUESTIONS';
+export const DEFAULT_BROWSER_MODE = 'headless';
 
 export function homeDir() {
   return process.env.GPT_PRO_HOME || path.join(os.homedir(), 'gpt-pro');
@@ -29,7 +30,7 @@ export function paths() {
 export function settings() {
   return {
     baseUrl: process.env.GPT_PRO_CHATGPT_URL || 'https://chatgpt.com',
-    browserMode: process.env.GPT_PRO_BROWSER_MODE || 'background',
+    browserMode: process.env.GPT_PRO_BROWSER_MODE || DEFAULT_BROWSER_MODE,
     projectName: process.env.GPT_PRO_PROJECT || DEFAULT_PROJECT_NAME,
     idleMs: Number.parseInt(process.env.GPT_PRO_IDLE_MS || `${DEFAULT_IDLE_MS}`, 10),
     operationTimeoutMs: Number.parseInt(process.env.GPT_PRO_OPERATION_TIMEOUT_MS || `${12 * 60 * 1000}`, 10),

@@ -1479,6 +1479,45 @@ test('ChatGPT blocker detection ignores ordinary chat text', async (t) => {
   await browser.close();
 });
 
+test('visible reasoning extraction opens and captures grey thinking summaries', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const page = await browser.newPage();
+  await page.setContent(`
+    <main>
+      <button id="thought-button" aria-expanded="false" aria-controls="thought-body" style="color: rgb(140, 140, 140)">Pro думает</button>
+      <div id="thought-body" data-testid="reasoning-panel" style="display:none;color: rgb(140, 140, 140)">
+        When cleanup fails, it should become a warning and remain visible in receipts.
+      </div>
+      <script>
+        document.querySelector('#thought-button').addEventListener('click', () => {
+          const button = document.querySelector('#thought-button');
+          const body = document.querySelector('#thought-body');
+          const next = button.getAttribute('aria-expanded') !== 'true';
+          body.style.display = next ? 'block' : 'none';
+          button.setAttribute('aria-expanded', next ? 'true' : 'false');
+        });
+      </script>
+    </main>
+  `);
+
+  const reasoning = await extractVisibleReasoning(page);
+  assert.match(reasoning, /Pro думает/);
+  assert.match(reasoning, /When cleanup fails/);
+  assert.equal(await page.locator('#thought-button').getAttribute('aria-expanded'), 'true');
+
+  const second = await extractVisibleReasoning(page);
+  assert.match(second, /When cleanup fails/);
+  assert.equal(await page.locator('#thought-button').getAttribute('aria-expanded'), 'true');
+  await browser.close();
+});
+
 test('submitPrompt stops if a ChatGPT blocker appears after text entry', async (t) => {
   let browser;
   try {

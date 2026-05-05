@@ -335,3 +335,22 @@ test('gpt-pro-sidecar status fails closed for dead workers without receipts', as
   assert.match(result.stdout, /^FAILED/m);
   assert.match(result.stdout, /worker exited before writing exit_code/);
 });
+
+test('gpt-pro-sidecar status surfaces live gpt-pro progress line', async () => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-sidecar-progress-'));
+  const runDir = path.join(temp, 'runs', '20260505T000000Z-progress-1');
+  await fs.mkdir(runDir, { recursive: true });
+  const sleeper = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });
+  try {
+    await fs.writeFile(path.join(runDir, 'pid'), `${sleeper.pid}\n`);
+    await fs.writeFile(path.join(runDir, 'stdout.txt'), '');
+    await fs.writeFile(path.join(runDir, 'stderr.txt'), 'noise\nstatus: phase=waiting_answer elapsed=12s generating=true thinking="Pro думает"\n');
+
+    const result = await runSidecar(['status', runDir], { env: process.env });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /^RUNNING/m);
+    assert.match(result.stdout, /^progress: phase=waiting_answer elapsed=12s generating=true thinking="Pro думает"$/m);
+  } finally {
+    sleeper.kill('SIGKILL');
+  }
+});

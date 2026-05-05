@@ -21,6 +21,7 @@ import {
   cleanupStaleRuntime,
   ensureKeeper,
   keeperRequest,
+  readRuntime,
   runtimeStatus,
   stopKeeper,
 } from './runtime.js';
@@ -31,6 +32,7 @@ function usage() {
 Commands:
   gpt-pro --version
   gpt-pro doctor
+  gpt-pro status
   gpt-pro login
   gpt-pro sessions [--project CLI_QUESTIONS]
   gpt-pro ask [--session new|current|<url>] [--project CLI_QUESTIONS] [--github-repo owner/repo|auto] [--attach <zip-or-dir>] [--timeout <ms>] -- <prompt>
@@ -46,6 +48,16 @@ function formatDuration(ms) {
   const seconds = totalSeconds % 60;
   if (minutes === 0) return `${seconds}s`;
   return `${minutes}m${String(seconds).padStart(2, '0')}s`;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function compactLine(value, max = 180) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1))}…`;
 }
 
 function resolvePath(value) {
@@ -354,6 +366,102 @@ async function doctor() {
   console.log(lines.join('\n'));
 }
 
+function formatKeeperStatus(status) {
+  const task = status.task || null;
+  const page = status.page || null;
+  const lines = [
+    'OK',
+    `keeper: ${status.browserAlive ? `${status.mode} pid=${status.pid} browser=${status.browserPid || ''}` : 'unhealthy'}`,
+    `queue-depth: ${status.queueDepth ?? 0}`,
+  ];
+  if (task) {
+    const elapsedMs = task.startedAt ? Date.now() - Date.parse(task.startedAt) : null;
+    lines.push(`task: ${task.command || 'unknown'} ${task.phase || task.state || 'running'}${elapsedMs ? ` elapsed=${formatDuration(elapsedMs)}` : ''}`);
+    if (Array.isArray(task.githubRepositories) && task.githubRepositories.length > 0) {
+      lines.push(`github: ${task.githubRepositories.join(', ')}`);
+    }
+  } else {
+    lines.push('task: none');
+  }
+  if (page?.blocker) lines.push(`blocker: ${page.blocker.code} ${compactLine(page.blocker.message, 220)}`);
+  if (typeof page?.generating === 'boolean') lines.push(`generating: ${page.generating}`);
+  if (page?.reasoningPreview) lines.push(`thinking: ${compactLine(page.reasoningPreview, 300)}`);
+  if (page?.answerPreview) lines.push(`answer-preview: ${compactLine(page.answerPreview, 300)}`);
+  if (page?.url) lines.push(`url: ${page.url}`);
+  if (page?.error) lines.push(`status-error: ${page.error}`);
+  return lines.join('\n');
+}
+
+function formatProgressLine(status) {
+  const task = status.task || {};
+  const page = status.page || {};
+  if (!task.phase && !page.reasoningPreview && !page.blocker) return '';
+  const elapsedMs = task.startedAt ? Date.now() - Date.parse(task.startedAt) : 0;
+  const parts = [
+    `phase=${task.phase || task.state || 'running'}`,
+    `elapsed=${formatDuration(elapsedMs)}`,
+  ];
+  if (typeof page.generating === 'boolean') parts.push(`generating=${page.generating}`);
+  if (page.blocker?.code) parts.push(`blocker=${page.blocker.code}`);
+  const thought = page.reasoningPreview || page.answerPreview || '';
+  if (thought) parts.push(`thinking="${compactLine(thought, 180).replace(/"/g, "'")}"`);
+  if (page.url) parts.push(`url=${page.url}`);
+  return `status: ${parts.join(' ')}`;
+}
+
+function progressSignature(status) {
+  const task = status.task || {};
+  const page = status.page || {};
+  if (!task.phase && !page.reasoningPreview && !page.blocker) return '';
+  const thought = page.reasoningPreview || page.answerPreview || '';
+  return JSON.stringify({
+    phase: task.phase || task.state || 'running',
+    generating: typeof page.generating === 'boolean' ? page.generating : null,
+    blocker: page.blocker?.code || null,
+    thought: compactLine(thought, 180),
+    url: page.url || null,
+  });
+}
+
+async function reportProgressUntil(runtime, promise) {
+  if (process.env.GPT_PRO_PROGRESS === '0') return;
+  let settled = false;
+  promise.finally(() => {
+    settled = true;
+  }).catch(() => {});
+  let lastSignature = '';
+  let lastPrintAt = 0;
+  await sleep(1500);
+  while (!settled) {
+    const status = await keeperRequest(runtime, '/status', {}, 3000).catch(() => null);
+    const line = status ? formatProgressLine(status) : '';
+    const signature = status ? progressSignature(status) : '';
+    const now = Date.now();
+    if (line && (signature !== lastSignature || now - lastPrintAt > 30_000)) {
+      process.stderr.write(`${line}\n`);
+      lastSignature = signature;
+      lastPrintAt = now;
+    }
+    await sleep(5000);
+  }
+}
+
+async function status() {
+  const runtime = await readRuntime();
+  const runtimeState = await runtimeStatus();
+  if (!runtime || !runtimeState.alive) {
+    console.log('OK\nkeeper: stopped\ntask: none');
+    return;
+  }
+  try {
+    const live = await keeperRequest(runtime, '/status', {}, 5000);
+    console.log(formatKeeperStatus(live));
+  } catch (error) {
+    console.log(`WARN\nkeeper: unhealthy pid=${runtime.pid} version=${runtime.version || 'unknown'}\nerror: ${error.message}`);
+    process.exitCode = 10;
+  }
+}
+
 async function login() {
   const runtime = await ensureKeeper({ mode: 'headed' });
   const result = await keeperRequest(runtime, '/login', { timeoutMs: settings().operationTimeoutMs }, settings().operationTimeoutMs + 5000);
@@ -398,7 +506,7 @@ async function runAsk(options) {
     const projectCache = await readSessionCache(options.project);
     const runtime = await ensureKeeper({ mode: settings().browserMode });
     const requestTimeoutMs = options.timeoutMs + settings().downloadTimeoutMs + 15_000;
-    const result = await keeperRequest(runtime, '/ask', {
+    const askPromise = keeperRequest(runtime, '/ask', {
       session: resolvedSession.session,
       projectName: options.project,
       projectUrlHint: projectCache?.projectUrl || '',
@@ -408,6 +516,10 @@ async function runAsk(options) {
       downloadDir: pendingFiles,
       timeoutMs: options.timeoutMs,
     }, requestTimeoutMs);
+    const result = await Promise.race([
+      askPromise,
+      reportProgressUntil(runtime, askPromise).then(() => askPromise),
+    ]);
 
     const sessionSlug = sessionSlugFromUrl(result.url, resolvedSession.session);
     const messageDir = await nextMessageDir(sessionSlug);
@@ -620,6 +732,7 @@ async function main() {
     return;
   }
   if (command === 'doctor') return doctor();
+  if (command === 'status') return status();
   if (command === 'login') return login();
   if (command === 'sessions') return sessions(rest);
   if (command === 'ask') return ask(rest);

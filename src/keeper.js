@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { chromium } from 'playwright';
 import { chromeLaunchArgs } from './browser-launch.js';
-import { PACKAGE_VERSION, paths, settings } from './config.js';
+import { DEFAULT_BROWSER_MODE, PACKAGE_VERSION, paths, settings } from './config.js';
 import { ensureDir, pathExists, writeJson } from './fsx.js';
 import { cleanupProfileProcesses } from './runtime.js';
 import { downloadAnswerArtifacts } from './downloads.js';
@@ -15,6 +15,7 @@ import {
   assistantMessageCount,
   cleanupGitHubRepositorySelections,
   extractLatestAnswer,
+  extractLiveStatus,
   extractVisibleReasoning,
   openOrCreateProject,
   scrapeSessions,
@@ -25,7 +26,7 @@ import {
 
 const mode = ['headed', 'headless', 'background'].includes(process.env.GPT_PRO_KEEPER_MODE)
   ? process.env.GPT_PRO_KEEPER_MODE
-  : 'background';
+  : DEFAULT_BROWSER_MODE;
 const token = process.env.GPT_PRO_KEEPER_TOKEN;
 
 if (!token) {
@@ -43,6 +44,7 @@ let idleTimer;
 let server;
 let browserQueue = Promise.resolve();
 let browserQueueDepth = 0;
+let currentTask = null;
 const reservedDownloadTargets = new Set();
 
 async function runBrowserTask(task) {
@@ -204,6 +206,40 @@ function authorize(req) {
   return req.headers.authorization === `Bearer ${token}`;
 }
 
+function taskPatch(patch) {
+  if (!currentTask) return;
+  currentTask = {
+    ...currentTask,
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function keeperStatus() {
+  const browserAlive = browserBackingAlive();
+  let pageStatus = null;
+  if (activePage && !activePage.isClosed()) {
+    pageStatus = await extractLiveStatus(activePage, {
+      prompt: currentTask?.prompt || '',
+    }).catch((error) => ({
+      error: error.message,
+      url: activePage?.url?.() || null,
+    }));
+  }
+  return {
+    ok: browserAlive,
+    error: browserAlive ? undefined : 'browser backing process is not reachable',
+    pid: process.pid,
+    mode,
+    profileDir: rootPaths.profileDir,
+    browserPid: chromeProcess?.pid || null,
+    browserAlive,
+    queueDepth: browserQueueDepth,
+    task: currentTask,
+    page: pageStatus,
+  };
+}
+
 function touchIdle() {
   if (idleTimer) clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
@@ -248,7 +284,12 @@ async function handle(req, res) {
         browserPid: chromeProcess?.pid || null,
         browserAlive,
         queueDepth: browserQueueDepth,
+        task: currentTask,
       });
+    }
+
+    if (req.method === 'GET' && req.url === '/status') {
+      return json(res, 200, await keeperStatus());
     }
 
     if (req.method !== 'POST') return json(res, 404, { ok: false, error: 'not found' });
@@ -265,31 +306,81 @@ async function handle(req, res) {
         const page = await browserPage();
 
         if (req.url === '/login') {
-          await page.goto(appSettings.baseUrl, { waitUntil: 'domcontentloaded' });
-          await waitForLoggedIn(page, body.timeoutMs || appSettings.operationTimeoutMs);
-          return json(res, 200, { ok: true, url: page.url() });
+          const startedAt = Date.now();
+          currentTask = {
+            id: `${startedAt}-${Math.random().toString(16).slice(2, 10)}`,
+            command: 'login',
+            phase: 'opening_login',
+            state: 'running',
+            startedAt: new Date(startedAt).toISOString(),
+            updatedAt: new Date(startedAt).toISOString(),
+            url: page.url(),
+          };
+          try {
+            await page.goto(appSettings.baseUrl, { waitUntil: 'domcontentloaded' });
+            taskPatch({ phase: 'waiting_login', url: page.url() });
+            await waitForLoggedIn(page, body.timeoutMs || appSettings.operationTimeoutMs);
+            taskPatch({ phase: 'done', state: 'done', url: page.url() });
+            return json(res, 200, { ok: true, url: page.url() });
+          } finally {
+            currentTask = null;
+          }
         }
 
         if (req.url === '/sessions') {
-          await page.goto(appSettings.baseUrl, { waitUntil: 'domcontentloaded' });
-          await waitForLoggedIn(page, body.timeoutMs || 60_000, { failFastUnauth: true });
-          const project = body.projectName
-            ? await openOrCreateProject(page, {
-              projectName: body.projectName,
-              baseUrl: appSettings.baseUrl,
-              timeoutMs: body.timeoutMs || 60_000,
-              projectUrlHint: body.projectUrlHint || '',
-            })
-            : null;
-          return json(res, 200, {
-            ok: true,
-            sessions: await scrapeSessions(page, project?.projectUrl),
+          const startedAt = Date.now();
+          currentTask = {
+            id: `${startedAt}-${Math.random().toString(16).slice(2, 10)}`,
+            command: 'sessions',
+            phase: 'opening_home',
+            state: 'running',
+            startedAt: new Date(startedAt).toISOString(),
+            updatedAt: new Date(startedAt).toISOString(),
+            projectName: body.projectName || null,
             url: page.url(),
-            project,
-          });
+          };
+          try {
+            await page.goto(appSettings.baseUrl, { waitUntil: 'domcontentloaded' });
+            taskPatch({ phase: 'auth_check', url: page.url() });
+            await waitForLoggedIn(page, body.timeoutMs || 60_000, { failFastUnauth: true });
+            taskPatch({ phase: body.projectName ? 'opening_project' : 'scraping_sessions', url: page.url() });
+            const project = body.projectName
+              ? await openOrCreateProject(page, {
+                projectName: body.projectName,
+                baseUrl: appSettings.baseUrl,
+                timeoutMs: body.timeoutMs || 60_000,
+                projectUrlHint: body.projectUrlHint || '',
+              })
+              : null;
+            taskPatch({ phase: 'scraping_sessions', url: page.url() });
+            const sessions = await scrapeSessions(page, project?.projectUrl);
+            taskPatch({ phase: 'done', state: 'done', url: page.url() });
+            return json(res, 200, {
+              ok: true,
+              sessions,
+              url: page.url(),
+              project,
+            });
+          } finally {
+            currentTask = null;
+          }
         }
 
         const startedAt = Date.now();
+        currentTask = {
+          id: `${startedAt}-${Math.random().toString(16).slice(2, 10)}`,
+          command: 'ask',
+          phase: 'opening',
+          state: 'running',
+          startedAt: new Date(startedAt).toISOString(),
+          updatedAt: new Date(startedAt).toISOString(),
+          projectName: body.projectName || null,
+          session: body.session || null,
+          githubRepositories: body.githubRepositories || [],
+          hasAttachment: Boolean(body.attachmentPath),
+          prompt: body.prompt || '',
+          url: page.url(),
+        };
         const downloads = [];
         const downloadSaves = [];
         if (body.downloadDir) await ensureDir(body.downloadDir);
@@ -306,8 +397,10 @@ async function handle(req, res) {
         try {
           let project = null;
           if (body.session && /^https?:\/\//.test(body.session)) {
+            taskPatch({ phase: 'opening_session', url: body.session });
             await page.goto(body.session, { waitUntil: 'domcontentloaded' });
           } else if (body.projectName) {
+            taskPatch({ phase: 'opening_project' });
             project = await openOrCreateProject(page, {
               projectName: body.projectName,
               baseUrl: appSettings.baseUrl,
@@ -316,17 +409,21 @@ async function handle(req, res) {
               projectUrlHint: body.projectUrlHint || '',
             });
           } else if (body.session !== 'current') {
+            taskPatch({ phase: 'opening_home' });
             await page.goto(appSettings.baseUrl, { waitUntil: 'domcontentloaded' });
           }
+          taskPatch({ phase: 'auth_check', url: page.url() });
           await waitForLoggedIn(page, body.timeoutMs || 60_000, { failFastUnauth: true });
           const previousAnswer = await extractLatestAnswer(page).catch(() => '');
           const previousAssistantCount = await assistantMessageCount(page).catch(() => 0);
+          taskPatch({ phase: 'submitting', url: page.url() });
           const promptSubmission = await submitPrompt(page, {
             prompt: body.prompt,
             attachmentPath: body.attachmentPath,
             githubRepositories: body.githubRepositories || [],
           });
           let githubConnector = promptSubmission.githubConnector;
+          taskPatch({ phase: 'waiting_answer', url: page.url(), githubConnector });
           let answer;
           let reasoning;
           let answerDownloads;
@@ -336,6 +433,7 @@ async function handle(req, res) {
               previousAnswer,
               previousAssistantCount,
             });
+            taskPatch({ phase: 'capturing_artifacts', url: page.url() });
             await Promise.allSettled(downloadSaves);
             reasoning = await extractVisibleReasoning(page);
             answerDownloads = body.downloadDir
@@ -347,6 +445,7 @@ async function handle(req, res) {
               })
               : { links: [], downloads: [], errors: [] };
           } finally {
+            taskPatch({ phase: 'cleanup', url: page.url(), githubConnector });
             githubConnector = await cleanupGitHubRepositorySelections(page, githubConnector).catch((error) => ({
               ...githubConnector,
               cleanup: {
@@ -358,6 +457,7 @@ async function handle(req, res) {
               },
             }));
           }
+          taskPatch({ phase: 'done', state: 'done', url: page.url(), githubConnector });
           return json(res, 200, {
             ok: true,
             answer,
@@ -375,6 +475,7 @@ async function handle(req, res) {
           });
         } finally {
           page.off('download', onDownload);
+          currentTask = null;
         }
       });
     }

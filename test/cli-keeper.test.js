@@ -20,6 +20,34 @@ test('CLI exposes quiet version flags', async () => {
   }
 });
 
+test('CLI status is quiet when keeper is stopped', async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-status-stopped-'));
+  const { stdout, stderr } = await execFile(process.execPath, [cliPath, 'status'], {
+    env: {
+      ...process.env,
+      GPT_PRO_HOME: home,
+    },
+    timeout: 10_000,
+  });
+  assert.equal(stderr, '');
+  assert.match(stdout, /^OK/m);
+  assert.match(stdout, /^keeper: stopped$/m);
+  assert.match(stdout, /^task: none$/m);
+});
+
+test('doctor defaults agent traffic to headless browser mode', async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-doctor-headless-'));
+  const { stdout } = await execFile(process.execPath, [cliPath, 'doctor'], {
+    env: {
+      ...process.env,
+      GPT_PRO_HOME: home,
+      GPT_PRO_BROWSER_MODE: '',
+    },
+    timeout: 10_000,
+  });
+  assert.match(stdout, /^browser-mode: headless$/m);
+});
+
 async function profileProcessLines(profileDir) {
   const { stdout } = await execFile('ps', ['-axo', 'pid=,command=']);
   return stdout
@@ -88,6 +116,7 @@ function fakeChatGptServer() {
             const prompt = document.querySelector('#prompt-textarea').textContent;
             const overlapped = window.__gptProActiveGenerations > 0;
             window.__gptProActiveGenerations += 1;
+            const delay = prompt.includes('slow-progress') ? 7000 : (prompt.includes('concurrent-') ? 800 : 50);
             const user = document.createElement('div');
             user.setAttribute('data-message-author-role', 'user');
             user.textContent = prompt;
@@ -99,7 +128,7 @@ function fakeChatGptServer() {
               assistant.textContent = prompt.includes('proof.txt') ? '${smokeSentinel}' : (overlapped ? 'OVERLAP ' : 'CLI-E2E ') + prompt;
               document.body.appendChild(assistant);
               window.__gptProActiveGenerations -= 1;
-            }, prompt.includes('concurrent-') ? 800 : 50);
+            }, delay);
           });
         </script>
       </body>
@@ -210,6 +239,45 @@ test('concurrent CLI asks use one serialized keeper without mixed prompts', asyn
       .map((result) => result.stdout.match(/^answer: (.+)$/m)?.[1])
       .map((answerPath) => path.dirname(answerPath));
     assert.equal(new Set(answerDirs).size, 2);
+  } finally {
+    await execFile(process.execPath, [cliPath, 'stop'], { env, timeout: 10_000 }).catch(() => {});
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('CLI ask progress suppresses elapsed-only noise on stderr', async (t) => {
+  if (!await pathExists('/Applications/Google Chrome.app')) {
+    t.skip('Google Chrome is not installed');
+    return;
+  }
+
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-progress-e2e-'));
+  const { server, url } = await fakeChatGptServer();
+  const env = {
+    ...process.env,
+    GPT_PRO_HOME: home,
+    GPT_PRO_CHATGPT_URL: url,
+    GPT_PRO_BROWSER_MODE: 'headless',
+    GPT_PRO_OPERATION_TIMEOUT_MS: '20000',
+    GPT_PRO_IDLE_MS: '60000',
+  };
+
+  try {
+    const { stdout, stderr } = await execFile(process.execPath, [
+      cliPath,
+      'ask',
+      '--session',
+      'new',
+      '--timeout',
+      '20000',
+      '--',
+      'slow-progress stable status',
+    ], { env, timeout: 45_000 });
+
+    assert.match(stdout, /^OK/m);
+    const statusLines = stderr.split('\n').filter((line) => line.startsWith('status: '));
+    assert.equal(statusLines.length, 1, stderr);
+    assert.match(statusLines[0], /phase=waiting_answer/);
   } finally {
     await execFile(process.execPath, [cliPath, 'stop'], { env, timeout: 10_000 }).catch(() => {});
     await new Promise((resolve) => server.close(resolve));

@@ -10,13 +10,13 @@ answer plus files on disk. It is a browser bridge, not an OpenAI API client.
 ## Install
 
 ```sh
-npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.24/gpt-pro-cli-0.1.24.tgz
+npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.25/gpt-pro-cli-0.1.25.tgz
 ```
 
 Or install the same release from the Git tag:
 
 ```sh
-npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.24
+npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.25
 ```
 
 For local development:
@@ -30,6 +30,7 @@ npm link
 
 ```sh
 gpt-pro doctor
+gpt-pro status
 gpt-pro login
 gpt-pro smoke
 gpt-pro ask -- "Think through this carefully..."
@@ -58,13 +59,26 @@ gpt-pro-sidecar wait <run-dir>
 printf '%s\n' "Final pressure" | gpt-pro-sidecar flagship <run-dir>
 ```
 
+`gpt-pro ask` prints final machine-readable fields to stdout and live progress
+to stderr. The progress lines are intentionally compact, for example current
+phase, elapsed time, whether ChatGPT is still generating, and the latest visible
+thinking/reasoning summary when ChatGPT exposes one. Use `GPT_PRO_PROGRESS=0`
+to silence those progress lines.
+
+`gpt-pro status` does not start a browser. When a keeper is already running it
+prints the current task phase, queue depth, page URL, generation state, visible
+thinking preview, and answer preview. This is the command agents should call
+when they need to know whether GPT PRO is still working.
+
 `gpt-pro-sidecar start` returns a run directory immediately and detaches a real
 worker process, so the browser action survives after the calling agent's shell
 turn exits. `wait` blocks until completion and prints compact status fields by
 default; use `wait --show` or `show` when you need stdout/stderr plus the full
 answer body. `status` is fail-closed: a dead worker without
 `exit_code` is reported as `FAILED`, not as a forever-pending run, and completed
-runs include answer/receipt/url fields inline. Receipt warnings make sidecar
+runs include answer/receipt/url fields inline. While a run is still active,
+`status` also surfaces the latest `gpt-pro ask` progress line from stderr, so a
+calling agent can see the current phase without opening the browser. Receipt warnings make sidecar
 runs exit non-zero, so agents do not accidentally treat missing downloads,
 unproven project grounding, or connector failures as clean success. `flagship`
 asks the same ChatGPT thread for a final strengthening pass, so agent workflows
@@ -146,20 +160,20 @@ membership.
 `GPT_PRO_PROJECT` changes the ChatGPT project name. `GPT_PRO_HOME` changes the
 local storage root.
 
-The default browser mode is `background`: a normal Chrome session using the
-persistent `~/gpt-pro/browser-profile`, launched with a deterministic window
-size and `--start-minimized` so it does not steal the desktop during agent work. It is
-intentionally not true headless by default because ChatGPT currently tends to
-challenge headless sessions.
+The default browser mode is `headless`: agent asks use the persistent
+`~/gpt-pro/browser-profile` through Chrome's CDP path without opening a visible
+Chrome window. This keeps normal agent work out of your desktop. If ChatGPT
+challenges the headless session, the CLI fails closed instead of silently
+falling back to a visible browser.
 
 `gpt-pro doctor` prints both the CLI version and keeper version. If a keeper from
 an older install is still alive, the next `ask`/`smoke` automatically restarts it
 instead of reusing a stale browser worker.
 
-`gpt-pro login` always opens visible Chrome so you can complete auth or a human
-challenge. Fully headless mode is still available with
-`GPT_PRO_BROWSER_MODE=headless`; it uses the same profile through Chrome's CDP
-path, but ChatGPT may still challenge headless browser sessions.
+`gpt-pro login` is the only command that intentionally opens visible Chrome, so
+you can complete auth or a human challenge. A visible agent browser is still
+available explicitly with `GPT_PRO_BROWSER_MODE=background` or
+`GPT_PRO_BROWSER_MODE=headed`, but it is no longer the default.
 
 Downloader limits can be changed with `GPT_PRO_MAX_DOWNLOAD_BYTES` and
 `GPT_PRO_DOWNLOAD_TIMEOUT_MS`.

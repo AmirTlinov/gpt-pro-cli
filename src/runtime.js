@@ -4,7 +4,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { spawn, execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
-import { PACKAGE_VERSION, paths } from './config.js';
+import { DEFAULT_BROWSER_MODE, PACKAGE_VERSION, paths } from './config.js';
 import { ensureDir, pathExists, readJson } from './fsx.js';
 
 const START_TIMEOUT_MS = 45_000;
@@ -107,13 +107,14 @@ export async function keeperRequest(runtime, endpoint, body = {}, timeoutMs = 30
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    const isGet = endpoint === '/health' || endpoint === '/status';
     const response = await fetch(`http://127.0.0.1:${runtime.port}${endpoint}`, {
-      method: endpoint === '/health' ? 'GET' : 'POST',
+      method: isGet ? 'GET' : 'POST',
       headers: {
         authorization: `Bearer ${runtime.token}`,
         'content-type': 'application/json',
       },
-      body: endpoint === '/health' ? undefined : JSON.stringify(body),
+      body: isGet ? undefined : JSON.stringify(body),
       signal: controller.signal,
     });
     const value = await response.json().catch(() => ({}));
@@ -257,7 +258,7 @@ export async function stopKeeper(options = {}) {
 async function ensureKeeperUnlocked({ mode } = {}) {
   await ensureDir(paths().runtimeDir);
   await cleanupStaleRuntime();
-  const desiredMode = mode || 'background';
+  const desiredMode = mode || DEFAULT_BROWSER_MODE;
   const current = await readRuntime();
   const currentHealth = await health(current);
   const currentCompatible = current?.mode === desiredMode && current?.version === PACKAGE_VERSION;

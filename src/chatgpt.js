@@ -1644,19 +1644,135 @@ export async function assistantMessageCount(page) {
   });
 }
 
+export async function expandVisibleReasoning(page) {
+  await page.evaluate(() => {
+    function textOf(node) {
+      return String([
+        node.innerText || '',
+        node.textContent || '',
+        node.getAttribute?.('aria-label') || '',
+        node.getAttribute?.('title') || '',
+      ].join(' ')).toLowerCase();
+    }
+
+    function visible(node) {
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    }
+
+    const labels = [
+      'thinking',
+      'thought',
+      'reasoning',
+      'думает',
+      'мысли',
+      'рассуж',
+    ];
+    for (const detail of Array.from(document.querySelectorAll('details'))) {
+      if (!visible(detail) || detail.open) continue;
+      const text = textOf(detail);
+      if (labels.some((label) => text.includes(label))) detail.open = true;
+    }
+    const nodes = Array.from(document.querySelectorAll('button,[role="button"],summary'));
+    for (const node of nodes) {
+      if (!visible(node)) continue;
+      const text = textOf(node);
+      if (!labels.some((label) => text.includes(label))) continue;
+      const expanded = node.getAttribute('aria-expanded');
+      const tag = node.tagName.toLowerCase();
+      if (tag === 'summary') {
+        const detail = node.closest('details');
+        if (detail && !detail.open) node.click();
+        continue;
+      }
+      if (expanded === 'true') continue;
+      const shouldOpen = expanded === 'false'
+        || (expanded == null && (text.includes('show') || text.includes('показ')));
+      if (shouldOpen) node.click();
+    }
+  }).catch(() => {});
+}
+
 export async function extractVisibleReasoning(page) {
+  await expandVisibleReasoning(page);
   return page.evaluate(() => {
-    const nodes = Array.from(document.querySelectorAll([
+    function normalized(value) {
+      return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function visible(node) {
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    }
+
+    function isGreyish(node) {
+      const style = window.getComputedStyle(node);
+      const match = String(style.color || '').match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+      if (!match) return false;
+      const [r, g, b] = match.slice(1).map(Number);
+      const spread = Math.max(r, g, b) - Math.min(r, g, b);
+      return spread < 24 && r >= 90 && r <= 180 && g >= 90 && g <= 180 && b >= 90 && b <= 180;
+    }
+
+    const strongSelectors = [
       '[data-gpt-pro-reasoning]',
-      '[data-testid*="reasoning"]',
-      '[class*="reasoning"]',
+      '[data-testid*="reasoning" i]',
+      '[data-testid*="thinking" i]',
+      '[data-testid*="thought" i]',
+      '[class*="reasoning" i]',
+      '[class*="thinking" i]',
+      '[class*="thought" i]',
+      '[aria-label*="reasoning" i]',
+      '[aria-label*="thinking" i]',
+      '[aria-label*="дума" i]',
       'details',
-    ].join(',')));
-    return nodes
-      .map((node) => (node.innerText || node.textContent || '').trim())
-      .filter(Boolean)
-      .join('\n\n');
+    ];
+    const nodes = [];
+    for (const selector of strongSelectors) {
+      nodes.push(...Array.from(document.querySelectorAll(selector)));
+    }
+    for (const node of Array.from(document.querySelectorAll('main button, main [role="button"], main p, main span, main div'))) {
+      const text = normalized(node.innerText || node.textContent || node.getAttribute('aria-label') || '');
+      if (!text || text.length < 8 || text.length > 1200) continue;
+      const lower = text.toLowerCase();
+      if (lower.includes('думает') || lower.includes('thinking') || lower.includes('reasoning') || isGreyish(node)) {
+        nodes.push(node);
+      }
+    }
+
+    const seenNodes = new Set();
+    const seenTexts = new Set();
+    const texts = [];
+    for (const node of nodes) {
+      if (seenNodes.has(node) || !visible(node)) continue;
+      seenNodes.add(node);
+      const text = normalized(node.innerText || node.textContent || node.getAttribute('aria-label') || '');
+      if (!text || seenTexts.has(text)) continue;
+      seenTexts.add(text);
+      texts.push(text);
+    }
+    return texts.join('\n\n');
   });
+}
+
+export async function extractLiveStatus(page, options = {}) {
+  const blocker = await detectChatGptBlocker(page);
+  const generating = await isGenerating(page);
+  const reasoning = await extractVisibleReasoning(page).catch(() => '');
+  const answer = await (options.prompt
+    ? extractLatestAnswerAfterPrompt(page, options.prompt)
+    : extractLatestAnswer(page)).catch(() => '');
+  return {
+    url: page.url(),
+    generating,
+    blocker,
+    reasoning,
+    reasoningPreview: reasoning.replace(/\s+/g, ' ').trim().slice(0, 500),
+    answerPreview: answer.replace(/\s+/g, ' ').trim().slice(0, 500),
+    assistantCount: await assistantMessageCount(page).catch(() => null),
+  };
 }
 
 export async function extractLinks(page) {

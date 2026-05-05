@@ -180,6 +180,11 @@ RUNNING
 run: $run_dir
 pid: $pid
 OUT
+    local progress
+    progress="$(progress_summary "$run_dir" || true)"
+    if [[ -n "$progress" ]]; then
+      printf 'progress: %s\n' "${progress#status: }"
+    fi
     return
   fi
   cat <<OUT
@@ -211,6 +216,12 @@ error_summary() {
       else if (n >= 1) print lines[1]
     }
   ' "$run_dir/stderr.txt"
+}
+
+progress_summary() {
+  local run_dir="${1:?missing run-dir}"
+  [[ -f "$run_dir/stderr.txt" ]] || return 1
+  awk '/^status: / { line=$0 } END { if (line) print line }' "$run_dir/stderr.txt"
 }
 
 trim_text() {
