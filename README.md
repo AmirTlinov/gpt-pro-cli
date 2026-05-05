@@ -10,13 +10,13 @@ answer plus files on disk. It is a browser bridge, not an OpenAI API client.
 ## Install
 
 ```sh
-npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.11/gpt-pro-cli-0.1.11.tgz
+npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.12/gpt-pro-cli-0.1.12.tgz
 ```
 
 Or install the same release from the Git tag:
 
 ```sh
-npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.11
+npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.12
 ```
 
 For local development:
@@ -58,8 +58,11 @@ gpt-pro-sidecar status <run-dir>
 printf '%s\n' "Final pressure" | gpt-pro-sidecar flagship <run-dir>
 ```
 
-`gpt-pro-sidecar start` returns a run directory immediately. `flagship` waits for
-the first completed run output and asks the same ChatGPT thread for a final
+`gpt-pro-sidecar start` returns a run directory immediately and detaches a real
+worker process, so the browser action survives after the calling agent's shell
+turn exits. `status` is fail-closed: a dead worker without `exit_code` is
+reported as `FAILED`, not as a forever-pending run. `flagship` waits for the
+first completed run output and asks the same ChatGPT thread for a final
 strengthening pass, so agent workflows can use GPT PRO without turning the chat
 into manual copy/paste.
 
@@ -107,8 +110,16 @@ delete ChatGPT web chats or any local chat outside the selected project archive.
 ## Configuration
 
 `GPT_PRO_PROJECT` changes the ChatGPT project name. `GPT_PRO_HOME` changes the
-local storage root. The default browser mode is visible Chrome; headless mode is
-available with `GPT_PRO_BROWSER_MODE=headless`, but ChatGPT may challenge it.
+local storage root.
+
+The default browser mode is `background`: a normal Chrome session using the
+persistent `~/gpt-pro/browser-profile`, launched with a deterministic window
+size for agent work. It is intentionally not true headless by default because
+ChatGPT currently tends to challenge headless sessions.
+`gpt-pro login` always opens visible Chrome so you can complete auth or a human
+challenge. Fully headless mode is still available with
+`GPT_PRO_BROWSER_MODE=headless`, but ChatGPT often challenges headless browser
+sessions; use it only when you have verified it on the current machine.
 
 Downloader limits can be changed with `GPT_PRO_MAX_DOWNLOAD_BYTES` and
 `GPT_PRO_DOWNLOAD_TIMEOUT_MS`.

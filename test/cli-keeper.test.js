@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile as execFileCallback } from 'node:child_process';
+import { spawn, execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pathExists } from '../src/fsx.js';
 
@@ -218,5 +218,31 @@ test('CLI ask talks through keeper and stop cleans runtime file', async (t) => {
   } finally {
     await execFile(process.execPath, [cliPath, 'stop'], { env, timeout: 10_000 }).catch(() => {});
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('stop does not kill unrelated processes that merely mention the profile arg', async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-stop-safe-'));
+  const profileDir = path.join(home, 'browser-profile');
+  await fs.mkdir(profileDir, { recursive: true });
+  const env = {
+    ...process.env,
+    GPT_PRO_HOME: home,
+  };
+  const decoy = spawn('/usr/bin/python3', [
+    '-c',
+    'import time; time.sleep(30)',
+    `--user-data-dir=${profileDir}`,
+  ], {
+    stdio: 'ignore',
+  });
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const stop = await execFile(process.execPath, [cliPath, 'stop'], { env, timeout: 10_000 });
+    assert.match(stop.stdout, /^OK/m);
+    assert.equal(decoy.kill(0), true);
+  } finally {
+    decoy.kill('SIGKILL');
   }
 });

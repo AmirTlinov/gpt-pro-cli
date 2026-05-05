@@ -110,6 +110,7 @@ async function terminatePid(pid) {
 
 async function profileProcessPids(profileDir) {
   const profileArg = `--user-data-dir=${path.resolve(profileDir)}`;
+  const browserProcessPattern = /(Google Chrome|Chromium|chrome|chromium)( Helper| Framework|\\.app|$)/i;
   try {
     const { stdout } = await execFile('ps', ['-axo', 'pid=,command='], { maxBuffer: 1024 * 1024 });
     return stdout
@@ -120,7 +121,7 @@ async function profileProcessPids(profileDir) {
         const match = line.match(/^(\d+)\s+(.+)$/);
         return match ? { pid: Number.parseInt(match[1], 10), command: match[2] } : null;
       })
-      .filter((entry) => entry && entry.command.includes(profileArg))
+      .filter((entry) => entry && entry.command.includes(profileArg) && browserProcessPattern.test(entry.command))
       .map((entry) => entry.pid)
       .filter((pid) => Number.isInteger(pid) && pid !== process.pid);
   } catch {
@@ -168,7 +169,7 @@ export async function stopKeeper() {
 export async function ensureKeeper({ mode } = {}) {
   await ensureDir(paths().runtimeDir);
   await cleanupStaleRuntime();
-  const desiredMode = mode || 'headed';
+  const desiredMode = mode || 'background';
   const current = await readRuntime();
   const currentHealth = await health(current);
   if (currentHealth && current.mode === desiredMode) return current;

@@ -48,6 +48,37 @@ resolve_gpt_pro() {
   return 1
 }
 
+resolve_node() {
+  if [[ -n "${NODE:-}" && -x "${NODE}" ]]; then
+    printf '%s\n' "$NODE"
+    return 0
+  fi
+  if command -v node >/dev/null 2>&1; then
+    command -v node
+    return 0
+  fi
+  if [[ -x /Users/amir/.volta/bin/node ]]; then
+    printf '%s\n' /Users/amir/.volta/bin/node
+    return 0
+  fi
+  return 1
+}
+
+worker_path() {
+  local source="${BASH_SOURCE[0]}"
+  local dir
+  dir="$(cd "$(dirname "$source")" && pwd -P)"
+  if [[ -f "$dir/../src/sidecar-worker.js" ]]; then
+    printf '%s\n' "$dir/../src/sidecar-worker.js"
+    return 0
+  fi
+  if [[ -f "$dir/../lib/node_modules/gpt-pro-cli/src/sidecar-worker.js" ]]; then
+    printf '%s\n' "$dir/../lib/node_modules/gpt-pro-cli/src/sidecar-worker.js"
+    return 0
+  fi
+  return 1
+}
+
 start() {
   local label="side-thinking"
   local project="${GPT_PRO_PROJECT:-CLI_QUESTIONS}"
@@ -91,32 +122,27 @@ start() {
   mkdir -p "$run_dir"
   prompt_file="$run_dir/prompt.md"
   cat > "$prompt_file"
+  : > "$run_dir/stdout.txt"
+  : > "$run_dir/stderr.txt"
   if [[ ${#github_repos[@]} -gt 0 ]]; then
     printf '%s\n' "${github_repos[@]}" > "$run_dir/github_repos"
   fi
   date -u +"%Y-%m-%dT%H:%M:%SZ" > "$run_dir/started_at"
 
-  (
-    set +e
-    if [[ ${#github_repos[@]} -gt 0 ]]; then
-      github_args=()
-      for repo in "${github_repos[@]}"; do
-        github_args+=(--github-repo "$repo")
-      done
-      "$gpt_pro_bin" ask --session new --project "$project" --timeout "$timeout" "${github_args[@]}" -- "$(cat "$prompt_file")" \
-        > "$run_dir/stdout.txt" \
-        2> "$run_dir/stderr.txt"
-    else
-      "$gpt_pro_bin" ask --session new --project "$project" --timeout "$timeout" -- "$(cat "$prompt_file")" \
-        > "$run_dir/stdout.txt" \
-        2> "$run_dir/stderr.txt"
-    fi
-    code=$?
-    printf '%s\n' "$code" > "$run_dir/exit_code"
-    date -u +"%Y-%m-%dT%H:%M:%SZ" > "$run_dir/finished_at"
-  ) </dev/null >/dev/null 2>/dev/null &
-  local child_pid=$!
-  disown "$child_pid" 2>/dev/null || true
+  local node_bin worker child_pid
+  if ! node_bin="$(resolve_node)"; then
+    echo "ERROR node is not available via NODE, PATH, or /Users/amir/.volta/bin/node" >&2
+    exit 127
+  fi
+  if ! worker="$(worker_path)"; then
+    echo "ERROR sidecar worker is missing near ${BASH_SOURCE[0]}" >&2
+    exit 127
+  fi
+  if [[ ${#github_repos[@]} -gt 0 ]]; then
+    child_pid="$("$node_bin" "$worker" --detach "$run_dir" "$gpt_pro_bin" "$project" "$timeout" "${github_repos[@]}")"
+  else
+    child_pid="$("$node_bin" "$worker" --detach "$run_dir" "$gpt_pro_bin" "$project" "$timeout")"
+  fi
 
   printf '%s\n' "$child_pid" > "$run_dir/pid"
   cat <<OUT
@@ -150,8 +176,9 @@ OUT
     return
   fi
   cat <<OUT
-UNKNOWN
+FAILED
 run: $run_dir
+reason: worker exited before writing exit_code
 stdout: $run_dir/stdout.txt
 stderr: $run_dir/stderr.txt
 OUT

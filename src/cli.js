@@ -309,6 +309,7 @@ async function doctor() {
     `archives: ${rootPaths.archivesDir}`,
     `chatgpt: ${settings().baseUrl}`,
     `project: ${settings().projectName}`,
+    `browser-mode: ${settings().browserMode}`,
     `chrome: ${chromeFound ? chromeApp : 'not found at /Applications/Google Chrome.app'}`,
     `keeper: ${status.healthy ? `${status.runtime.mode} pid=${status.runtime.pid}` : 'stopped'}`,
   ];

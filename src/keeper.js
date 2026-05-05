@@ -20,7 +20,9 @@ import {
   waitForLoggedIn,
 } from './chatgpt.js';
 
-const mode = process.env.GPT_PRO_KEEPER_MODE === 'headed' ? 'headed' : 'headless';
+const mode = ['headed', 'headless', 'background'].includes(process.env.GPT_PRO_KEEPER_MODE)
+  ? process.env.GPT_PRO_KEEPER_MODE
+  : 'background';
 const token = process.env.GPT_PRO_KEEPER_TOKEN;
 
 if (!token) {
@@ -78,12 +80,16 @@ async function launchHumanChrome() {
   await ensureDir(rootPaths.runtimeDir);
   const port = await freePort();
   const chromePath = process.env.GPT_PRO_CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+  const windowArgs = mode === 'background'
+    ? ['--window-size=1440,1000', '--window-position=0,0']
+    : ['--window-size=1440,1000'];
   chromeProcess = spawn(chromePath, [
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${rootPaths.profileDir}`,
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-dev-shm-usage',
+    ...windowArgs,
     appSettings.baseUrl,
   ], {
     stdio: 'ignore',
@@ -99,7 +105,7 @@ async function launchHumanChrome() {
 
 async function browserPage() {
   if (!context) {
-    if (mode === 'headed') {
+    if (mode === 'headed' || mode === 'background') {
       await launchHumanChrome();
     } else {
       await ensureDir(rootPaths.profileDir);

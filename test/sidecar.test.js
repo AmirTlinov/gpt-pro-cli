@@ -96,6 +96,7 @@ console.log('url: https://chatgpt.com/c/fake-' + count);
   const env = {
     ...process.env,
     PATH: `${fakeBin}${path.delimiter}${process.env.PATH}`,
+    GPT_PRO_BIN: fakeGptPro,
     GPT_PRO_FAKE_DIR: fakeDir,
     GPT_PRO_SIDECAR_DIR: path.join(temp, 'runs'),
   };
@@ -170,4 +171,18 @@ console.log('url: https://chatgpt.com/c/fake-' + count);
     .split('\n')
     .map((line) => JSON.parse(line));
   assert.equal(noPathCalls[0].prompt, 'No path prompt');
+});
+
+test('gpt-pro-sidecar status fails closed for dead workers without receipts', async () => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-sidecar-stale-'));
+  const runDir = path.join(temp, 'runs', '20260505T000000Z-stale-1');
+  await fs.mkdir(runDir, { recursive: true });
+  await fs.writeFile(path.join(runDir, 'pid'), '999999\n');
+  await fs.writeFile(path.join(runDir, 'stdout.txt'), '');
+  await fs.writeFile(path.join(runDir, 'stderr.txt'), '');
+
+  const result = await runSidecar(['status', runDir], { env: process.env });
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /^FAILED/m);
+  assert.match(result.stdout, /worker exited before writing exit_code/);
 });
