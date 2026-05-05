@@ -176,20 +176,37 @@ async function terminatePid(pid) {
 
 async function profileProcessPids(profileDir) {
   const profileArg = `--user-data-dir=${path.resolve(profileDir)}`;
-  const browserProcessPattern = /((Google Chrome|Chromium)( Helper| Framework|\.app|\s|$)|(^|[/\s])(chrome|chromium)( Helper| Framework|\.app|\s|$))/i;
+  const browserProcessPattern = /(^|\/)(Google Chrome|Chromium)( Helper( \([^)]+\))?)?(\.app\/Contents\/MacOS\/|\s|$)|(^|\/)(chrome|chromium)(\s|$)/i;
   try {
-    const { stdout } = await execFile('ps', ['-axo', 'pid=,command='], { maxBuffer: 1024 * 1024 });
-    return stdout
+    const { stdout } = await execFile('ps', ['-axo', 'pid=,ppid=,command='], { maxBuffer: 1024 * 1024 });
+    const entries = stdout
       .split('\n')
       .map((line) => line.trim())
       .filter(Boolean)
       .map((line) => {
-        const match = line.match(/^(\d+)\s+(.+)$/);
-        return match ? { pid: Number.parseInt(match[1], 10), command: match[2] } : null;
+        const match = line.match(/^(\d+)\s+(\d+)\s+(.+)$/);
+        return match ? {
+          pid: Number.parseInt(match[1], 10),
+          ppid: Number.parseInt(match[2], 10),
+          command: match[3],
+        } : null;
       })
-      .filter((entry) => entry && entry.command.includes(profileArg) && browserProcessPattern.test(entry.command))
+      .filter(Boolean);
+    const parentByPid = new Map(entries.map((entry) => [entry.pid, entry.ppid]));
+    const protectedPids = new Set([process.pid]);
+    let current = process.pid;
+    while (parentByPid.has(current)) {
+      const parent = parentByPid.get(current);
+      if (!parent || protectedPids.has(parent)) break;
+      protectedPids.add(parent);
+      current = parent;
+    }
+    return entries
+      .filter((entry) => entry.command.includes(profileArg)
+        && browserProcessPattern.test(entry.command)
+        && !protectedPids.has(entry.pid))
       .map((entry) => entry.pid)
-      .filter((pid) => Number.isInteger(pid) && pid !== process.pid);
+      .filter((pid) => Number.isInteger(pid));
   } catch {
     return [];
   }

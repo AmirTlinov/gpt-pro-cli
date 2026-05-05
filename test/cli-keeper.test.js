@@ -437,6 +437,7 @@ test('stop does not kill unrelated processes that merely mention the profile arg
     '-c',
     'import time; time.sleep(30)',
     `--user-data-dir=${profileDir}`,
+    'chrome profile status probe',
   ], {
     stdio: 'ignore',
   });
