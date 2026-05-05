@@ -10,13 +10,13 @@ answer plus files on disk. It is a browser bridge, not an OpenAI API client.
 ## Install
 
 ```sh
-npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.20/gpt-pro-cli-0.1.20.tgz
+npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.21/gpt-pro-cli-0.1.21.tgz
 ```
 
 Or install the same release from the Git tag:
 
 ```sh
-npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.20
+npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.21
 ```
 
 For local development:
@@ -116,6 +116,11 @@ trusting terminal output. Message directories are allocated atomically and the
 keeper serializes browser mutations, so concurrent agent asks do not mix prompts
 or overwrite `message-<n>` artifacts.
 
+Failed asks also write a local failure receipt and print its path under
+`failure:`. That means an agent can inspect the exact prompt, requested project,
+GitHub repo request, and warning state even when ChatGPT login, connector
+selection, attachment staging, or answer stabilization fails.
+
 `gpt-pro archive` writes portable zip snapshots for the selected ChatGPT project
 to:
 
@@ -126,6 +131,9 @@ to:
 `gpt-pro archive --delete-local` first writes the zip, then deletes only the
 local chat directories that were actually included in that archive. It does not
 delete ChatGPT web chats or any local chat outside the selected project archive.
+If live session refresh fails, cache-only sessions may still be archived, but
+they are not deleted locally unless their saved message metadata proves project
+membership.
 
 ## Configuration
 

@@ -218,12 +218,50 @@ test('answer wait accepts a fresh repeated answer after the submitted prompt', a
     </main>
   `);
 
-  const answer = await waitForAnswerStable(page, 1200, {
+  const answer = await waitForAnswerStable(page, 5000, {
     prompt: 'repeat please',
     previousAnswer: 'OK',
     previousAssistantCount: 1,
   });
   assert.equal(answer, 'OK');
+  await browser.close();
+});
+
+test('answer wait does not accept stale answer from repeated prompt prefix before assistant count advances', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const repeatedPrefix = 'Repository grounding requirement: '.padEnd(220, 'x');
+  const page = await browser.newPage();
+  await page.setContent(`
+    <main>
+      <div data-message-author-role="user">${repeatedPrefix} old question</div>
+      <div data-message-author-role="assistant">OLD_ANSWER_FOR_SHARED_PREFIX</div>
+      <script>
+        setTimeout(() => {
+          const user = document.createElement('div');
+          user.setAttribute('data-message-author-role', 'user');
+          user.textContent = '${repeatedPrefix} new question';
+          document.body.appendChild(user);
+          const assistant = document.createElement('div');
+          assistant.setAttribute('data-message-author-role', 'assistant');
+          assistant.textContent = 'NEW_ANSWER_FOR_SHARED_PREFIX';
+          document.body.appendChild(assistant);
+        }, 3500);
+      </script>
+    </main>
+  `);
+
+  const answer = await waitForAnswerStable(page, 8000, {
+    prompt: `${repeatedPrefix} new question`,
+    previousAssistantCount: 1,
+  });
+  assert.equal(answer, 'NEW_ANSWER_FOR_SHARED_PREFIX');
   await browser.close();
 });
 

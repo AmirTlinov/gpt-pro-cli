@@ -123,6 +123,9 @@ function receiptWarnings(data) {
   }
   if (!meta.project) warnings.push('project is missing in metadata');
   if (!meta.sessionUrl) warnings.push('session URL is missing in metadata');
+  if (meta.command === 'ask' && !sessionIdFromUrl(meta.sessionUrl || '')) {
+    warnings.push('session URL does not point to a ChatGPT conversation');
+  }
   return warnings;
 }
 
@@ -297,11 +300,11 @@ function pushUnique(ids, seen, id) {
   ids.push(safeId);
 }
 
-function pushUniqueSelected(selected, seen, id, deleteLocalAllowed) {
+function pushUniqueSelected(selected, seen, id, deleteLocalAllowed, deleteLocalSkipReason = '') {
   const safeId = safeSessionId(id);
   if (!safeId || seen.has(safeId)) return;
   seen.add(safeId);
-  selected.push({ id: safeId, deleteLocalAllowed });
+  selected.push({ id: safeId, deleteLocalAllowed, deleteLocalSkipReason });
 }
 
 async function localProjectSessionIds(projectName, chatsDir) {
@@ -396,9 +399,9 @@ async function deleteArchivedLocalSessions(projectName, chatsDir, archivedSessio
       continue;
     }
     if (session.deleteLocalAllowed === false) {
-      const skipped = { id, reason: 'project membership is inferred from URL only' };
+      const skipped = { id, reason: session.deleteLocalSkipReason || 'project membership is inferred from URL only' };
       skippedSessions.push(skipped);
-      warnings.push(`skipped local deletion for session ${id}: project membership is inferred from URL only`);
+      warnings.push(`skipped local deletion for session ${id}: ${skipped.reason}`);
       continue;
     }
     if (await localSessionProjectState(projectName, chatsDir, id) === 'different') {
@@ -425,20 +428,30 @@ export async function archiveLocalChats({
   sessions = [],
   warnings = [],
   deleteLocal = false,
+  deleteLocalRequiresLocalProof = false,
 }) {
   const rootPaths = paths();
   await ensureDir(rootPaths.archivesDir);
   const zip = new AdmZip();
   const selected = [];
+  const requiresLocalProofForDelete = Boolean(deleteLocal && deleteLocalRequiresLocalProof);
 
   if (sessionRef === 'all') {
     const seen = new Set();
     for (const id of uniqueSessionIds(sessions)) {
-      if (await localSessionProjectState(projectName, rootPaths.chatsDir, id) === 'different') {
+      const projectState = await localSessionProjectState(projectName, rootPaths.chatsDir, id);
+      if (projectState === 'different') {
         warnings.push(`session ${id} has local metadata for a different project than ${projectName}; skipped`);
         continue;
       }
-      pushUniqueSelected(selected, seen, id, true);
+      const canDelete = !requiresLocalProofForDelete || projectState === 'belongs';
+      pushUniqueSelected(
+        selected,
+        seen,
+        id,
+        canDelete,
+        canDelete ? '' : 'project membership is cache-only after session refresh failure',
+      );
     }
     for (const id of await localProjectSessionIds(projectName, rootPaths.chatsDir)) {
       pushUniqueSelected(selected, seen, id, true);
@@ -458,7 +471,12 @@ export async function archiveLocalChats({
         if (projectState === 'different') {
           warnings.push(`session ${sessionRef} is not known in project ${projectName}`);
         } else if (cachedIds.has(safeId) || projectState === 'belongs') {
-          selected.push({ id: safeId, deleteLocalAllowed: true });
+          const canDelete = !requiresLocalProofForDelete || projectState === 'belongs';
+          selected.push({
+            id: safeId,
+            deleteLocalAllowed: canDelete,
+            deleteLocalSkipReason: canDelete ? '' : 'project membership is cache-only after session refresh failure',
+          });
         } else if (urlLooksLikeProjectSession(sessionRef, projectName)) {
           selected.push({ id: safeId, deleteLocalAllowed: false });
         } else {
@@ -484,7 +502,12 @@ export async function archiveLocalChats({
       continue;
     }
     messagesCount += messages;
-    archivedSessions.push({ id: target.id, messages, deleteLocalAllowed: session.deleteLocalAllowed });
+    archivedSessions.push({
+      id: target.id,
+      messages,
+      deleteLocalAllowed: session.deleteLocalAllowed,
+      deleteLocalSkipReason: session.deleteLocalSkipReason || '',
+    });
     await addDirToArchive(zip, target.dir, target.dir, `chats/${target.id}`);
   }
 
@@ -507,7 +530,10 @@ export async function archiveLocalChats({
   setJsonFile(zip, 'manifest.json', manifest);
   setJsonFile(zip, 'project-sessions.json', sessions);
 
-  const archivePath = path.join(rootPaths.archivesDir, `gpt-pro-${sanitizeSlug(projectName, 'project')}-${archiveTimestamp()}.zip`);
+  const archivePath = path.join(
+    rootPaths.archivesDir,
+    `gpt-pro-${sanitizeSlug(projectName, 'project')}-${archiveTimestamp()}-${crypto.randomBytes(3).toString('hex')}.zip`,
+  );
   zip.writeZip(archivePath);
   if (deleteLocal && archivedSessions.length > 0) {
     const deletion = await deleteArchivedLocalSessions(projectName, rootPaths.chatsDir, archivedSessions, warnings);

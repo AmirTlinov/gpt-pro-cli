@@ -114,6 +114,41 @@ function fakeChatGptServer() {
   });
 }
 
+test('CLI ask cleans pending runtime artifacts when attachment staging fails', async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-pending-cleanup-'));
+  const env = {
+    ...process.env,
+    GPT_PRO_HOME: home,
+  };
+
+  let stderr = '';
+  await assert.rejects(
+    execFile(process.execPath, [
+      cliPath,
+      'ask',
+      '--attach',
+      path.join(home, 'missing-input.zip'),
+      '--',
+      'this must fail before browser work',
+    ], { env, timeout: 10_000 }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /^ERROR\n/);
+      stderr = error.stderr;
+      return true;
+    },
+  );
+
+  const pendingRoot = path.join(home, 'runtime', 'pending');
+  const entries = await fs.readdir(pendingRoot).catch(() => []);
+  assert.deepEqual(entries, []);
+  const failureReceipt = stderr.match(/^failure: (.+receipt\.json)$/m)?.[1];
+  assert.ok(failureReceipt);
+  assert.equal(await pathExists(failureReceipt), true);
+  const receipt = JSON.parse(await fs.readFile(failureReceipt, 'utf8'));
+  assert.equal(receipt.status, 'warn');
+  assert.ok(receipt.warnings.includes('answer is empty'));
+});
 
 test('concurrent CLI asks use one serialized keeper without mixed prompts', async (t) => {
   if (!await pathExists('/Applications/Google Chrome.app')) {

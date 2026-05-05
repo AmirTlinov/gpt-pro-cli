@@ -221,7 +221,11 @@ async function stopKeeperUnlocked() {
     try {
       await keeperRequest(runtime, '/stop', {}, 5000);
     } catch {
-      process.kill(runtime.pid, 'SIGTERM');
+      try {
+        process.kill(runtime.pid, 'SIGTERM');
+      } catch {
+        // The keeper may have exited between the liveness probe and SIGTERM.
+      }
     }
   }
   const deadline = Date.now() + 5000;

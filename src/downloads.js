@@ -173,7 +173,11 @@ async function clickFallbackDownloadAction(page, downloadDir, sourceLabel, timeo
     const actions = [];
     let index = 0;
     for (const control of document.querySelectorAll('button,[role="button"],a[href]')) {
-      if (!visible(control) || control.hasAttribute('data-gpt-pro-download-id')) continue;
+      if (
+        !visible(control)
+        || control.hasAttribute('data-gpt-pro-download-id')
+        || control.hasAttribute('data-gpt-pro-download-seen')
+      ) continue;
       const label = normalized([
         control.innerText || control.textContent,
         control.getAttribute('aria-label'),
@@ -202,6 +206,33 @@ async function clickFallbackDownloadAction(page, downloadDir, sourceLabel, timeo
     }
   }
   return null;
+}
+
+async function markVisibleFallbackDownloadActions(page) {
+  await page.evaluate(() => {
+    function visible(node) {
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    }
+
+    function normalized(value) {
+      return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+
+    for (const control of document.querySelectorAll('button,[role="button"],a[href]')) {
+      if (!visible(control)) continue;
+      const label = normalized([
+        control.innerText || control.textContent,
+        control.getAttribute('aria-label'),
+        control.getAttribute('title'),
+        control.getAttribute('download'),
+      ].filter(Boolean).join(' '));
+      if (/download|скач|сохран/i.test(label)) {
+        control.setAttribute('data-gpt-pro-download-seen', '1');
+      }
+    }
+  });
 }
 
 async function triggerControl(page, selector) {
@@ -276,6 +307,7 @@ export async function clickAnswerDownloadControls(page, prompt, downloadDir, opt
     : 10_000;
   for (const { id, label } of controls) {
     try {
+      await markVisibleFallbackDownloadActions(page);
       const [download] = await Promise.all([
         page.waitForEvent('download', { timeout: controlTimeoutMs }),
         triggerControl(page, `[data-gpt-pro-download-id="${id}"]`),
@@ -302,7 +334,10 @@ export async function downloadAnswerLinks(page, links, downloadDir, options = {}
   const errors = [];
 
   for (const [index, link] of links.entries()) {
-    const candidates = [link.url, githubRawUrl(link.url)].filter(Boolean);
+    const rawGitHubUrl = githubRawUrl(link.url);
+    const candidates = rawGitHubUrl
+      ? [rawGitHubUrl, link.url]
+      : [link.url];
     const tried = new Set();
     let lastError = null;
     try {

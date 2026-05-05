@@ -1588,9 +1588,14 @@ export async function waitForAnswerStable(page, timeoutMs, options = {}) {
       ? await extractLatestAnswerAfterPrompt(page, options.prompt)
       : await extractLatestAnswer(page);
     const generating = await isGenerating(page);
-    const assistantCount = options.prompt ? null : await assistantMessageCount(page).catch(() => null);
+    const assistantCount = Number.isInteger(baselineAssistantCount)
+      ? await assistantMessageCount(page).catch(() => null)
+      : (options.prompt ? null : await assistantMessageCount(page).catch(() => null));
     const isFresh = options.prompt
-      ? Boolean(answer)
+      ? Boolean(answer) && (
+        !Number.isInteger(baselineAssistantCount)
+        || (Number.isInteger(assistantCount) && assistantCount > baselineAssistantCount)
+      )
       : Boolean(answer) && (
         !options.previousAnswer
         || answer !== options.previousAnswer
@@ -1606,7 +1611,9 @@ export async function waitForAnswerStable(page, timeoutMs, options = {}) {
     }
     await page.waitForTimeout(1000);
   }
-  if (last && !lastGenerating) return last;
+  if (last && !lastGenerating) {
+    throw new Error('Timed out waiting for a stable ChatGPT answer; the unstabilized answer was discarded');
+  }
   if (last && lastGenerating) {
     throw new Error('Timed out waiting for a complete ChatGPT answer; generation was still running, so the partial answer was discarded');
   }

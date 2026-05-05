@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { chromium } from 'playwright';
 import { chromeLaunchArgs } from './browser-launch.js';
 import { PACKAGE_VERSION, paths, settings } from './config.js';
-import { ensureDir, writeJson } from './fsx.js';
+import { ensureDir, pathExists, writeJson } from './fsx.js';
 import { cleanupProfileProcesses } from './runtime.js';
 import { downloadAnswerArtifacts } from './downloads.js';
 import {
@@ -43,6 +43,7 @@ let idleTimer;
 let server;
 let browserQueue = Promise.resolve();
 let browserQueueDepth = 0;
+const reservedDownloadTargets = new Set();
 
 async function runBrowserTask(task) {
   browserQueueDepth += 1;
@@ -89,11 +90,12 @@ async function freePort() {
   return port;
 }
 
-async function waitForCdp(port, { isProcessExited = () => false } = {}) {
+async function waitForCdp(port, { launchFailure = () => null } = {}) {
   const deadline = Date.now() + 45_000;
   let lastError = null;
   while (Date.now() < deadline) {
-    if (isProcessExited()) throw new Error(`Chrome exited before DevTools port ${port} became reachable`);
+    const failure = launchFailure();
+    if (failure) throw failure;
     try {
       const response = await fetch(`http://127.0.0.1:${port}/json/version`);
       if (response.ok) return;
@@ -114,20 +116,23 @@ async function launchChromeWithCdp() {
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     await cleanupProfileProcesses(rootPaths.profileDir);
     const port = await freePort();
-    let exited = false;
+    let launchError = null;
     chromeProcess = spawn(chromePath, chromeLaunchArgs({
       port,
       profileDir: rootPaths.profileDir,
       mode,
       baseUrl: appSettings.baseUrl,
     }), { stdio: 'ignore' });
-    chromeProcess.once('exit', () => {
-      exited = true;
+    chromeProcess.once('error', (error) => {
+      launchError = new Error(`Chrome failed to launch at ${chromePath}: ${error.message}`);
+    });
+    chromeProcess.once('exit', (code, signal) => {
+      launchError ||= new Error(`Chrome exited before DevTools port ${port} became reachable (code=${code ?? 'null'} signal=${signal ?? 'null'})`);
       chromeProcess = null;
     });
 
     try {
-      await waitForCdp(port, { isProcessExited: () => exited });
+      await waitForCdp(port, { launchFailure: () => launchError });
       browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
       context = browser.contexts()[0];
       if (!context) throw new Error('Chrome DevTools connection did not expose a browser context');
@@ -150,6 +155,15 @@ async function launchChromeWithCdp() {
 }
 
 async function browserPage() {
+  if (context && !browserBackingAlive()) {
+    activePage = null;
+    await context.close().catch(() => {});
+    await browser?.close().catch(() => {});
+    context = null;
+    browser = null;
+    chromeProcess = null;
+    await cleanupProfileProcesses(rootPaths.profileDir);
+  }
   if (!context) {
     await launchChromeWithCdp();
   }
@@ -160,6 +174,19 @@ async function browserPage() {
   activePage = context.pages()[0] || await context.newPage();
   await activePage.setViewportSize({ width: 1440, height: 1000 }).catch(() => {});
   return activePage;
+}
+
+async function uniqueBrowserDownloadTarget(downloadDir, suggestedFilename) {
+  const initial = downloadTarget(downloadDir, suggestedFilename);
+  const parsed = path.parse(initial);
+  let target = initial;
+  let suffix = 2;
+  while (reservedDownloadTargets.has(target) || await pathExists(target)) {
+    target = path.join(parsed.dir, `${parsed.name}-${suffix}${parsed.ext}`);
+    suffix += 1;
+  }
+  reservedDownloadTargets.add(target);
+  return target;
 }
 
 function json(res, status, value) {
@@ -267,8 +294,10 @@ async function handle(req, res) {
         const downloadSaves = [];
         if (body.downloadDir) await ensureDir(body.downloadDir);
         const onDownload = async (download) => {
-          const target = downloadTarget(body.downloadDir || rootPaths.runtimeDir, download.suggestedFilename());
-          const save = download.saveAs(target).then(() => downloads.push(target));
+          const target = await uniqueBrowserDownloadTarget(body.downloadDir || rootPaths.runtimeDir, download.suggestedFilename());
+          const save = download.saveAs(target)
+            .then(() => downloads.push(target))
+            .finally(() => reservedDownloadTargets.delete(target));
           downloadSaves.push(save);
           await save;
         };

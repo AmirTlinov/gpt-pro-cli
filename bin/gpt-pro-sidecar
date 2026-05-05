@@ -1,6 +1,6 @@
 #!/bin/bash
 set -euo pipefail
-export PATH="${PATH:+$PATH:}/Users/amir/.volta/bin:/Users/amir/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH="${PATH:+$PATH:}${HOME:+$HOME/.volta/bin:$HOME/.local/bin:}/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 usage() {
   cat <<'USAGE'
@@ -40,12 +40,12 @@ resolve_gpt_pro() {
     command -v gpt-pro
     return 0
   fi
-  if [[ -x /Users/amir/.volta/bin/gpt-pro ]]; then
-    printf '%s\n' /Users/amir/.volta/bin/gpt-pro
+  if [[ -n "${HOME:-}" && -x "$HOME/.volta/bin/gpt-pro" ]]; then
+    printf '%s\n' "$HOME/.volta/bin/gpt-pro"
     return 0
   fi
-  if [[ -x /Users/amir/.local/bin/gpt-pro ]]; then
-    printf '%s\n' /Users/amir/.local/bin/gpt-pro
+  if [[ -n "${HOME:-}" && -x "$HOME/.local/bin/gpt-pro" ]]; then
+    printf '%s\n' "$HOME/.local/bin/gpt-pro"
     return 0
   fi
   return 1
@@ -60,8 +60,8 @@ resolve_node() {
     command -v node
     return 0
   fi
-  if [[ -x /Users/amir/.volta/bin/node ]]; then
-    printf '%s\n' /Users/amir/.volta/bin/node
+  if [[ -n "${HOME:-}" && -x "$HOME/.volta/bin/node" ]]; then
+    printf '%s\n' "$HOME/.volta/bin/node"
     return 0
   fi
   return 1
@@ -114,7 +114,7 @@ start() {
 
   local gpt_pro_bin
   if ! gpt_pro_bin="$(resolve_gpt_pro)"; then
-    echo "ERROR gpt-pro is not available via GPT_PRO_BIN, PATH, or /Users/amir/.volta/bin/gpt-pro" >&2
+    echo "ERROR gpt-pro is not available via GPT_PRO_BIN, PATH, or HOME/PATH" >&2
     exit 127
   fi
 
@@ -135,7 +135,7 @@ start() {
 
   local node_bin worker child_pid
   if ! node_bin="$(resolve_node)"; then
-    echo "ERROR node is not available via NODE, PATH, or /Users/amir/.volta/bin/node" >&2
+    echo "ERROR node is not available via NODE, PATH, or HOME/PATH" >&2
     exit 127
   fi
   if ! worker="$(worker_path)"; then
@@ -375,7 +375,7 @@ flagship() {
 
   local gpt_pro_bin
   if ! gpt_pro_bin="$(resolve_gpt_pro)"; then
-    echo "ERROR gpt-pro is not available via GPT_PRO_BIN, PATH, or /Users/amir/.volta/bin/gpt-pro" >&2
+    echo "ERROR gpt-pro is not available via GPT_PRO_BIN, PATH, or HOME/PATH" >&2
     exit 127
   fi
 

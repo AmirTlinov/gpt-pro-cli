@@ -77,7 +77,7 @@ test('answer downloader scopes links to the current assistant answer and records
   }
 });
 
-test('answer downloader falls back from GitHub blob links to raw content', async (t) => {
+test('answer downloader saves GitHub blob links as raw content instead of HTML', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-github-raw-'));
   const calls = [];
   const page = {
@@ -86,18 +86,21 @@ test('answer downloader falls back from GitHub blob links to raw content', async
         request: {
           async get(url) {
             calls.push(url);
-            if (url === 'https://github.com/AmirTlinov/gpt-pro-cli/blob/main/README.md') {
+            if (url === 'https://raw.githubusercontent.com/AmirTlinov/gpt-pro-cli/main/README.md') {
               return {
-                ok: () => false,
-                status: () => 429,
+                ok: () => true,
+                status: () => 200,
+                headers: () => ({ 'content-type': 'text/markdown' }),
+                url: () => url,
+                body: async () => Buffer.from('# raw readme'),
               };
             }
             return {
               ok: () => true,
               status: () => 200,
-              headers: () => ({ 'content-type': 'text/markdown' }),
+              headers: () => ({ 'content-type': 'text/html' }),
               url: () => url,
-              body: async () => Buffer.from('# raw readme'),
+              body: async () => Buffer.from('<html>GitHub blob page, not raw content</html>'),
             };
           },
         },
@@ -113,7 +116,6 @@ test('answer downloader falls back from GitHub blob links to raw content', async
   ], dir, { timeoutMs: 5000, maxBytes: 1024 * 1024 });
 
   assert.deepEqual(calls, [
-    'https://github.com/AmirTlinov/gpt-pro-cli/blob/main/README.md',
     'https://raw.githubusercontent.com/AmirTlinov/gpt-pro-cli/main/README.md',
   ]);
   assert.equal(result.errors.length, 0);
@@ -220,6 +222,57 @@ test('answer downloader follows file preview download actions', async (t) => {
     assert.equal(result.downloads[0].label, 'report.zip / Download');
     assert.match(result.downloads[0].path, /report\.zip$/);
     assert.equal(await fs.readFile(result.downloads[0].path, 'utf8'), 'PREVIEW_DOWNLOAD_OK');
+  } finally {
+    await context.close();
+    await browser.close();
+  }
+});
+
+test('answer downloader does not use preexisting page-global download buttons as fallback', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-global-download-'));
+  const context = await browser.newContext({ acceptDownloads: true });
+  const page = await context.newPage();
+  try {
+    await page.setContent(`<!doctype html>
+      <main>
+        <button id="old-download">Download</button>
+        <div data-message-author-role="user">make missing preview file</div>
+        <div data-message-author-role="assistant">
+          <button id="file-chip">report.zip</button>
+        </div>
+        <script>
+          document.querySelector('#old-download').addEventListener('click', () => {
+            const blob = new Blob(['OLD_GLOBAL_DOWNLOAD_SHOULD_NOT_BE_USED'], { type: 'application/zip' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = 'old.zip';
+            document.body.appendChild(link);
+            link.click();
+          });
+          document.querySelector('#file-chip').addEventListener('click', () => {
+            document.body.setAttribute('data-preview-opened', '1');
+          });
+        </script>
+      </main>`);
+
+    const result = await downloadAnswerArtifacts(page, {
+      prompt: 'make missing preview file',
+      downloadDir: dir,
+      timeoutMs: 50,
+      maxBytes: 1024 * 1024,
+    });
+
+    assert.equal(result.downloads.length, 0);
+    assert.equal(result.errors.length, 1);
+    assert.match(result.errors[0].label, /report\.zip/);
   } finally {
     await context.close();
     await browser.close();

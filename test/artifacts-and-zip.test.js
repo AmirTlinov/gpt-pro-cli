@@ -432,6 +432,61 @@ test('archive delete-local keeps URL-inferred sessions local unless project owne
   assert.match(result.manifest.warnings.join('\n'), /skipped local deletion/);
 });
 
+test('archive delete-local does not delete cache-only sessions after live refresh failure', async () => {
+  const home = await tempHome();
+  process.env.GPT_PRO_HOME = home;
+  const cachedSessionId = 'cache-only-session';
+  const messageDir = await nextMessageDir(cachedSessionId);
+  await fs.writeFile(path.join(messageDir, 'answer.md'), 'cache only');
+
+  const result = await archiveLocalChats({
+    projectName: 'CLI_QUESTIONS',
+    sessionRef: 'all',
+    sessions: [
+      { title: 'Cached', id: cachedSessionId, shortId: 'cache-on', url: `https://chatgpt.com/g/cli-questions/c/${cachedSessionId}` },
+    ],
+    warnings: ['session refresh failed: fake outage'],
+    deleteLocal: true,
+    deleteLocalRequiresLocalProof: true,
+  });
+
+  const archive = new AdmZip(result.path);
+  const entries = archive.getEntries().map((entry) => entry.entryName);
+  assert.equal(result.manifest.sessionsCount, 1);
+  assert.ok(entries.includes(`chats/${cachedSessionId}/message-1/answer.md`));
+  assert.deepEqual(result.manifest.localDeletion.deletedSessions, []);
+  assert.deepEqual(result.manifest.localDeletion.skippedSessions, [
+    { id: cachedSessionId, reason: 'project membership is cache-only after session refresh failure' },
+  ]);
+  assert.equal(await exists(path.join(home, 'chats', cachedSessionId)), true);
+});
+
+test('archive paths are unique for rapid repeated archives', async () => {
+  const home = await tempHome();
+  process.env.GPT_PRO_HOME = home;
+  const sessionId = 'rapid-session';
+  const messageDir = await nextMessageDir(sessionId);
+  await fs.writeFile(path.join(messageDir, 'answer.md'), 'rapid');
+  await fs.writeFile(path.join(messageDir, 'meta.json'), JSON.stringify({ project: 'CLI_QUESTIONS' }));
+
+  const first = await archiveLocalChats({
+    projectName: 'CLI_QUESTIONS',
+    sessionRef: 'all',
+    sessions: [],
+    warnings: [],
+  });
+  const second = await archiveLocalChats({
+    projectName: 'CLI_QUESTIONS',
+    sessionRef: 'all',
+    sessions: [],
+    warnings: [],
+  });
+
+  assert.notEqual(first.path, second.path);
+  assert.equal(await exists(first.path), true);
+  assert.equal(await exists(second.path), true);
+});
+
 test('archive delete-local rejects dot-dot session refs before filesystem access', async () => {
   const home = await tempHome();
   process.env.GPT_PRO_HOME = home;

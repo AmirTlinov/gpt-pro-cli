@@ -216,6 +216,40 @@ async function extractDownloadedArchives(filesDir) {
   return extracted;
 }
 
+async function writeFailureArtifacts({
+  pendingAttachments,
+  pendingFiles,
+  pendingId,
+  sentPrompt,
+  options,
+  githubRepositories,
+  error,
+}) {
+  const messageDir = await nextMessageDir(`failed-${pendingId}`);
+  await copyIfExists(pendingAttachments, path.join(messageDir, 'attachments'));
+  await copyIfExists(pendingFiles, path.join(messageDir, 'files'));
+  const artifactReceipt = await writeMessageArtifacts(messageDir, {
+    prompt: sentPrompt,
+    answer: '',
+    downloads: [],
+    meta: {
+      command: 'ask',
+      failed: true,
+      error: error.message,
+      requestedSession: options.session,
+      requestedProject: options.project,
+      originalPrompt: options.prompt,
+      githubRepositories,
+      sessionUrl: null,
+      completedAt: new Date().toISOString(),
+    },
+  });
+  return {
+    messageDir,
+    receiptPath: artifactReceipt.path,
+  };
+}
+
 function insidePath(root, target) {
   const rel = path.relative(root, target);
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
@@ -350,21 +384,20 @@ async function runAsk(options) {
   const pendingFiles = path.join(pendingDir, 'files');
   await ensureDir(pendingAttachments);
   await ensureDir(pendingFiles);
-  await writeText(path.join(pendingDir, 'prompt.md'), sentPrompt);
-
-  let attachmentPath = null;
-  if (options.attach) {
-    attachmentPath = await stageAttachment(options.attach, path.join(pendingAttachments, 'input.zip'));
-  }
-
-  const startedAt = new Date();
-  const resolvedSession = await resolveSessionOption(options.session, options.project);
-  const projectCache = await readSessionCache(options.project);
-  const runtime = await ensureKeeper({ mode: settings().browserMode });
-  const requestTimeoutMs = options.timeoutMs + settings().downloadTimeoutMs + 15_000;
-  let result;
   try {
-    result = await keeperRequest(runtime, '/ask', {
+    await writeText(path.join(pendingDir, 'prompt.md'), sentPrompt);
+
+    let attachmentPath = null;
+    if (options.attach) {
+      attachmentPath = await stageAttachment(options.attach, path.join(pendingAttachments, 'input.zip'));
+    }
+
+    const startedAt = new Date();
+    const resolvedSession = await resolveSessionOption(options.session, options.project);
+    const projectCache = await readSessionCache(options.project);
+    const runtime = await ensureKeeper({ mode: settings().browserMode });
+    const requestTimeoutMs = options.timeoutMs + settings().downloadTimeoutMs + 15_000;
+    const result = await keeperRequest(runtime, '/ask', {
       session: resolvedSession.session,
       projectName: options.project,
       projectUrlHint: projectCache?.projectUrl || '',
@@ -374,96 +407,110 @@ async function runAsk(options) {
       downloadDir: pendingFiles,
       timeoutMs: options.timeoutMs,
     }, requestTimeoutMs);
-  } catch (error) {
-    await fs.rm(pendingDir, { recursive: true, force: true }).catch(() => {});
-    throw error;
-  }
 
-  const sessionSlug = sessionSlugFromUrl(result.url, resolvedSession.session);
-  const messageDir = await nextMessageDir(sessionSlug);
-  await copyIfExists(pendingAttachments, path.join(messageDir, 'attachments'));
-  await copyIfExists(pendingFiles, path.join(messageDir, 'files'));
-  const finalFilesDir = path.join(messageDir, 'files');
-  const browserDownloads = (result.downloads || []).map((download) => relocatePendingPath(pendingFiles, finalFilesDir, download));
-  const linkDownloads = (result.linkDownloads || []).map((download) => ({
-    ...download,
-    path: download.path ? relocatePendingPath(pendingFiles, finalFilesDir, download.path) : null,
-  }));
-  const savedLinkDownloads = linkDownloads.filter((download) => download.status === 'saved' && download.path);
-  const savedLinkPaths = new Set(savedLinkDownloads.map((download) => download.path));
-  const browserOnlyDownloads = browserDownloads.filter((download) => !savedLinkPaths.has(download));
-  const finalDownloads = [
-    ...browserOnlyDownloads,
-    ...savedLinkDownloads.map((download) => download.path),
-  ];
-  const extractionErrors = [];
-  let extractedFiles = [];
-  try {
-    extractedFiles = await extractDownloadedArchives(finalFilesDir);
-  } catch (error) {
-    extractionErrors.push({
-      label: 'downloaded zip extraction',
-      status: 'failed',
-      error: error.message,
-    });
-  }
-  const proofSource = projectProofSource(resolvedSession, result);
-  const provenProject = proofSource ? options.project : null;
-  const artifactReceipt = await writeMessageArtifacts(messageDir, {
-    prompt: sentPrompt,
-    answer: result.answer || result.latestVisibleAnswer || '',
-    reasoning: result.reasoning || '',
-    links: result.links || [],
-    downloads: [
+    const sessionSlug = sessionSlugFromUrl(result.url, resolvedSession.session);
+    const messageDir = await nextMessageDir(sessionSlug);
+    await copyIfExists(pendingAttachments, path.join(messageDir, 'attachments'));
+    await copyIfExists(pendingFiles, path.join(messageDir, 'files'));
+    const finalFilesDir = path.join(messageDir, 'files');
+    const browserDownloads = (result.downloads || []).map((download) => relocatePendingPath(pendingFiles, finalFilesDir, download));
+    const linkDownloads = (result.linkDownloads || []).map((download) => ({
+      ...download,
+      path: download.path ? relocatePendingPath(pendingFiles, finalFilesDir, download.path) : null,
+    }));
+    const savedLinkDownloads = linkDownloads.filter((download) => download.status === 'saved' && download.path);
+    const savedLinkPaths = new Set(savedLinkDownloads.map((download) => download.path));
+    const browserOnlyDownloads = browserDownloads.filter((download) => !savedLinkPaths.has(download));
+    const finalDownloads = [
       ...browserOnlyDownloads,
-      ...linkDownloads,
-      ...(result.downloadErrors || []),
-      ...extractionErrors,
-    ],
-    meta: {
-      command: 'ask',
-      requestedSession: options.session,
-      resolvedSession: resolvedSession.resolved || null,
-      project: provenProject,
-      requestedProject: options.project,
-      projectProofSource: proofSource || null,
-      projectUrl: result.project?.projectUrl || null,
-      projectCreated: result.project?.created || false,
-      originalPrompt: options.prompt,
-      githubRepositories,
-      githubConnector: result.githubConnector || null,
-      sessionUrl: result.url,
-      startedAt: startedAt.toISOString(),
-      completedAt: new Date().toISOString(),
-      elapsedMs: result.elapsedMs,
-      elapsed: formatDuration(result.elapsedMs),
-      attachment: attachmentPath ? path.join(messageDir, 'attachments', 'input.zip') : null,
-      downloads: finalDownloads,
-      linkDownloads,
-      downloadErrors: result.downloadErrors || [],
-      extractionErrors,
-      extractedFiles,
-      browserMode: runtime.mode,
-    },
-  });
-  await fs.rm(pendingDir, { recursive: true, force: true }).catch(() => {});
-  if (provenProject) {
-    await upsertSessionCache(options.project, {
-      title: options.prompt.split('\n').find(Boolean)?.trim().slice(0, 80) || 'Untitled',
-      url: result.url,
-    }, result.project?.projectUrl || null).catch(() => {});
-  }
+      ...savedLinkDownloads.map((download) => download.path),
+    ];
+    const extractionErrors = [];
+    let extractedFiles = [];
+    try {
+      extractedFiles = await extractDownloadedArchives(finalFilesDir);
+    } catch (error) {
+      extractionErrors.push({
+        label: 'downloaded zip extraction',
+        status: 'failed',
+        error: error.message,
+      });
+    }
+    const proofSource = projectProofSource(resolvedSession, result);
+    const provenProject = proofSource ? options.project : null;
+    const artifactReceipt = await writeMessageArtifacts(messageDir, {
+      prompt: sentPrompt,
+      answer: result.answer || result.latestVisibleAnswer || '',
+      reasoning: result.reasoning || '',
+      links: result.links || [],
+      downloads: [
+        ...browserOnlyDownloads,
+        ...linkDownloads,
+        ...(result.downloadErrors || []),
+        ...extractionErrors,
+      ],
+      meta: {
+        command: 'ask',
+        requestedSession: options.session,
+        resolvedSession: resolvedSession.resolved || null,
+        project: provenProject,
+        requestedProject: options.project,
+        projectProofSource: proofSource || null,
+        projectUrl: result.project?.projectUrl || null,
+        projectCreated: result.project?.created || false,
+        originalPrompt: options.prompt,
+        githubRepositories,
+        githubConnector: result.githubConnector || null,
+        sessionUrl: result.url,
+        startedAt: startedAt.toISOString(),
+        completedAt: new Date().toISOString(),
+        elapsedMs: result.elapsedMs,
+        elapsed: formatDuration(result.elapsedMs),
+        attachment: attachmentPath ? path.join(messageDir, 'attachments', 'input.zip') : null,
+        downloads: finalDownloads,
+        linkDownloads,
+        downloadErrors: result.downloadErrors || [],
+        extractionErrors,
+        extractedFiles,
+        browserMode: runtime.mode,
+      },
+    });
+    if (provenProject) {
+      await upsertSessionCache(options.project, {
+        title: options.prompt.split('\n').find(Boolean)?.trim().slice(0, 80) || 'Untitled',
+        url: result.url,
+      }, result.project?.projectUrl || null).catch(() => {});
+    }
 
-  return {
-    answerPath: path.join(messageDir, 'answer.md'),
-    filesDir: finalFilesDir,
-    messageDir,
-    receiptPath: artifactReceipt.path,
-    receipt: artifactReceipt.receipt,
-    githubRepositories,
-    result,
-    elapsed: formatDuration(result.elapsedMs),
-  };
+    return {
+      answerPath: path.join(messageDir, 'answer.md'),
+      filesDir: finalFilesDir,
+      messageDir,
+      receiptPath: artifactReceipt.path,
+      receipt: artifactReceipt.receipt,
+      githubRepositories,
+      result,
+      elapsed: formatDuration(result.elapsedMs),
+    };
+  } catch (error) {
+    try {
+      const failure = await writeFailureArtifacts({
+        pendingAttachments,
+        pendingFiles,
+        pendingId,
+        sentPrompt,
+        options,
+        githubRepositories,
+        error,
+      });
+      error.message = `${error.message}\nfailure: ${failure.receiptPath}`;
+    } catch {
+      // Preserve the original failure if failure-artifact writing itself breaks.
+    }
+    throw error;
+  } finally {
+    await fs.rm(pendingDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 async function ask(argv) {
@@ -530,9 +577,11 @@ async function archive(argv) {
   const options = parseArchiveArgs(argv);
   const warnings = [];
   let cache = null;
+  let sessionRefreshFailed = false;
   try {
     ({ cache } = await refreshSessions(options.project));
   } catch (error) {
+    sessionRefreshFailed = true;
     warnings.push(`session refresh failed: ${error.message}`);
     cache = await readSessionCache(options.project);
   }
@@ -543,6 +592,7 @@ async function archive(argv) {
     sessions: sessionsList,
     warnings,
     deleteLocal: options.deleteLocal,
+    deleteLocalRequiresLocalProof: sessionRefreshFailed,
   });
   const status = result.manifest.warnings.length > 0 ? 'WARN' : 'OK';
   console.log([
