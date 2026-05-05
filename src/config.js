@@ -1,6 +1,10 @@
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+
+export const PACKAGE_VERSION = packageJson.version;
 export const DEFAULT_IDLE_MS = 20 * 60 * 1000;
 export const DEFAULT_PROJECT_NAME = 'CLI_QUESTIONS';
 

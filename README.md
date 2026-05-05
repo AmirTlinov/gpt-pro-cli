@@ -10,13 +10,13 @@ answer plus files on disk. It is a browser bridge, not an OpenAI API client.
 ## Install
 
 ```sh
-npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.14/gpt-pro-cli-0.1.14.tgz
+npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.15/gpt-pro-cli-0.1.15.tgz
 ```
 
 Or install the same release from the Git tag:
 
 ```sh
-npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.14
+npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.15
 ```
 
 For local development:
@@ -123,6 +123,11 @@ The default browser mode is `background`: a normal Chrome session using the
 persistent `~/gpt-pro/browser-profile`, launched with a deterministic window
 size for agent work. It is intentionally not true headless by default because
 ChatGPT currently tends to challenge headless sessions.
+
+`gpt-pro doctor` prints both the CLI version and keeper version. If a keeper from
+an older install is still alive, the next `ask`/`smoke` automatically restarts it
+instead of reusing a stale browser worker.
+
 `gpt-pro login` always opens visible Chrome so you can complete auth or a human
 challenge. Fully headless mode is still available with
 `GPT_PRO_BROWSER_MODE=headless`, but ChatGPT often challenges headless browser

@@ -392,13 +392,29 @@ async function createProject(page, projectName) {
   };
 }
 
-export async function openOrCreateProject(page, { projectName, baseUrl, timeoutMs = 60_000, keepCurrent = false }) {
+export async function openOrCreateProject(page, { projectName, baseUrl, timeoutMs = 60_000, keepCurrent = false, projectUrlHint = '' }) {
   if (!projectName) return null;
 
   if (!/^https?:\/\//.test(page.url())) {
     await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   }
   await waitForLoggedIn(page, timeoutMs, { failFastUnauth: true });
+
+  if (projectUrlHint && /^https?:\/\//.test(projectUrlHint) && !keepCurrent) {
+    await page.goto(projectUrlHint, { waitUntil: 'domcontentloaded' });
+    await waitForLoggedIn(page, timeoutMs, { failFastUnauth: true });
+    const hintedCurrentUrl = await currentProjectUrl(page, projectName);
+    if (hintedCurrentUrl) {
+      await waitForComposer(page, 60_000);
+      return {
+        created: false,
+        keptCurrent: false,
+        projectName,
+        projectUrl: hintedCurrentUrl,
+        source: 'cache',
+      };
+    }
+  }
 
   const currentUrl = await currentProjectUrl(page, projectName);
   if (currentUrl) {

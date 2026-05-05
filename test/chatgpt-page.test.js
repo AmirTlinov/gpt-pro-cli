@@ -349,6 +349,34 @@ test('opens an existing CLI_QUESTIONS project before asking', async (t) => {
   }
 });
 
+test('opens cached CLI_QUESTIONS project URL when sidebar discovery is unavailable', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const { server, url } = await fakeProjectServer({ hasProject: false });
+  const page = await browser.newPage();
+  try {
+    await page.goto(url);
+    const project = await openOrCreateProject(page, {
+      projectName: 'CLI_QUESTIONS',
+      baseUrl: url,
+      timeoutMs: 5000,
+      projectUrlHint: `${url}/g/g-p-69f7c0903ae88191b78a7ca2f00838e0-cli-questions/project`,
+    });
+    assert.equal(project.created, false);
+    assert.equal(project.source, 'cache');
+    assert.match(project.projectUrl, /\/g\/g-p-69f7c0903ae88191b78a7ca2f00838e0-cli-questions\/project$/);
+  } finally {
+    await browser.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test('keeps current CLI_QUESTIONS project page even without a sidebar self-link', async (t) => {
   let browser;
   try {

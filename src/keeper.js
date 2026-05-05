@@ -5,7 +5,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { chromium } from 'playwright';
-import { paths, settings } from './config.js';
+import { PACKAGE_VERSION, paths, settings } from './config.js';
 import { ensureDir, writeJson } from './fsx.js';
 import { downloadAnswerArtifacts } from './downloads.js';
 import {
@@ -56,6 +56,29 @@ async function runBrowserTask(task) {
     touchIdle();
     release();
   }
+}
+
+function processAlive(pid) {
+  if (!pid || !Number.isInteger(pid)) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function browserBackingAlive() {
+  if (!context) return false;
+  try {
+    context.pages();
+  } catch {
+    return false;
+  }
+  if (mode === 'headed' || mode === 'background') {
+    return Boolean(chromeProcess?.pid && processAlive(chromeProcess.pid));
+  }
+  return true;
 }
 
 function browserLaunchOptions() {
@@ -187,11 +210,15 @@ async function handle(req, res) {
     touchIdle();
 
     if (req.method === 'GET' && req.url === '/health') {
-      return json(res, 200, {
-        ok: true,
+      const browserAlive = browserBackingAlive();
+      return json(res, browserAlive ? 200 : 503, {
+        ok: browserAlive,
+        error: browserAlive ? undefined : 'browser backing process is not reachable',
         pid: process.pid,
         mode,
         profileDir: rootPaths.profileDir,
+        browserPid: chromeProcess?.pid || null,
+        browserAlive,
         queueDepth: browserQueueDepth,
       });
     }
@@ -223,6 +250,7 @@ async function handle(req, res) {
               projectName: body.projectName,
               baseUrl: appSettings.baseUrl,
               timeoutMs: body.timeoutMs || 60_000,
+              projectUrlHint: body.projectUrlHint || '',
             })
             : null;
           return json(res, 200, {
@@ -255,6 +283,7 @@ async function handle(req, res) {
               baseUrl: appSettings.baseUrl,
               timeoutMs: body.timeoutMs || 60_000,
               keepCurrent: body.session === 'current',
+              projectUrlHint: body.projectUrlHint || '',
             });
           } else if (body.session !== 'current') {
             await page.goto(appSettings.baseUrl, { waitUntil: 'domcontentloaded' });
@@ -321,6 +350,7 @@ async function main() {
     port,
     token,
     mode,
+    version: PACKAGE_VERSION,
     startedAt: new Date().toISOString(),
     profileDir: rootPaths.profileDir,
     logFile: rootPaths.logFile,

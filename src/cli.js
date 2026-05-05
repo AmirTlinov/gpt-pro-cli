@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
-import { paths, settings } from './config.js';
+import { PACKAGE_VERSION, paths, settings } from './config.js';
 import {
   archiveLocalChats,
   nextMessageDir,
@@ -246,10 +246,12 @@ function relocatePendingPath(pendingRoot, finalRoot, target) {
 }
 
 async function refreshSessions(project) {
+  const existingCache = await readSessionCache(project);
   const runtime = await ensureKeeper({ mode: settings().browserMode });
   const result = await keeperRequest(runtime, '/sessions', {
     timeoutMs: 60_000,
     projectName: project,
+    projectUrlHint: existingCache?.projectUrl || '',
   }, 65_000);
   const cache = await writeSessionCache(project, result.sessions, {
     url: result.url,
@@ -307,6 +309,14 @@ async function doctor() {
   const chromeApp = '/Applications/Google Chrome.app';
   const chromeFound = await pathExists(chromeApp);
 
+  const keeperLine = status.healthy
+    ? status.compatible
+      ? `${status.runtime.mode} pid=${status.runtime.pid} version=${status.runtime.version || 'unknown'}`
+      : `stale pid=${status.runtime.pid} version=${status.runtime.version || 'unknown'}`
+    : status.alive
+      ? `unhealthy pid=${status.runtime.pid} version=${status.runtime?.version || 'unknown'}`
+      : 'stopped';
+
   const lines = [
     'OK',
     `home: ${rootPaths.root}`,
@@ -316,8 +326,9 @@ async function doctor() {
     `chatgpt: ${settings().baseUrl}`,
     `project: ${settings().projectName}`,
     `browser-mode: ${settings().browserMode}`,
+    `version: ${PACKAGE_VERSION}`,
     `chrome: ${chromeFound ? chromeApp : 'not found at /Applications/Google Chrome.app'}`,
-    `keeper: ${status.healthy ? `${status.runtime.mode} pid=${status.runtime.pid}` : 'stopped'}`,
+    `keeper: ${keeperLine}`,
   ];
   if (cleanup.cleaned) lines.push(`cleanup: ${cleanup.reason}`);
   if (!chromeFound) lines[0] = 'WARN';
@@ -364,17 +375,25 @@ async function runAsk(options) {
 
   const startedAt = new Date();
   const resolvedSession = await resolveSessionOption(options.session, options.project);
+  const projectCache = await readSessionCache(options.project);
   const runtime = await ensureKeeper({ mode: settings().browserMode });
   const requestTimeoutMs = options.timeoutMs + settings().downloadTimeoutMs + 15_000;
-  const result = await keeperRequest(runtime, '/ask', {
-    session: resolvedSession.session,
-    projectName: options.project,
-    prompt: sentPrompt,
-    attachmentPath,
-    githubRepositories,
-    downloadDir: pendingFiles,
-    timeoutMs: options.timeoutMs,
-  }, requestTimeoutMs);
+  let result;
+  try {
+    result = await keeperRequest(runtime, '/ask', {
+      session: resolvedSession.session,
+      projectName: options.project,
+      projectUrlHint: projectCache?.projectUrl || '',
+      prompt: sentPrompt,
+      attachmentPath,
+      githubRepositories,
+      downloadDir: pendingFiles,
+      timeoutMs: options.timeoutMs,
+    }, requestTimeoutMs);
+  } catch (error) {
+    await fs.rm(pendingDir, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
 
   const sessionSlug = sessionSlugFromUrl(result.url, resolvedSession.session);
   const messageDir = await nextMessageDir(sessionSlug);
@@ -443,7 +462,7 @@ async function runAsk(options) {
       browserMode: runtime.mode,
     },
   });
-  await fs.rm(pendingDir, { recursive: true, force: true });
+  await fs.rm(pendingDir, { recursive: true, force: true }).catch(() => {});
   if (provenProject) {
     await upsertSessionCache(options.project, {
       title: options.prompt.split('\n').find(Boolean)?.trim().slice(0, 80) || 'Untitled',

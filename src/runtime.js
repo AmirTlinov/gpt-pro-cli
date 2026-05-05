@@ -4,7 +4,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { spawn, execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
-import { paths } from './config.js';
+import { PACKAGE_VERSION, paths } from './config.js';
 import { ensureDir, pathExists, readJson } from './fsx.js';
 
 const START_TIMEOUT_MS = 45_000;
@@ -248,8 +248,9 @@ async function ensureKeeperUnlocked({ mode } = {}) {
   const desiredMode = mode || 'background';
   const current = await readRuntime();
   const currentHealth = await health(current);
-  if (currentHealth && current.mode === desiredMode) return current;
-  if (currentHealth && current.mode !== desiredMode) {
+  const currentCompatible = current?.mode === desiredMode && current?.version === PACKAGE_VERSION;
+  if (currentHealth && currentCompatible) return current;
+  if (currentHealth && !currentCompatible) {
     await stopKeeper({ lock: false });
   }
   if (!currentHealth && current && pidAlive(current.pid)) {
@@ -286,6 +287,7 @@ export async function runtimeStatus() {
     runtime,
     alive,
     healthy,
+    compatible: Boolean(runtime?.version === PACKAGE_VERSION),
     runtimeFileExists: await pathExists(paths().runtimeFile),
   };
 }
