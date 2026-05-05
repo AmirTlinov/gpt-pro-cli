@@ -10,9 +10,11 @@ Commands:
   gpt-pro-sidecar start [--label <name>] [--project CLI_QUESTIONS] [--github-repo owner/repo] [--timeout <ms>]
   gpt-pro-sidecar flagship <run-dir> [--project CLI_QUESTIONS] [--github-repo owner/repo] [--timeout <ms>]
   gpt-pro-sidecar status <run-dir>
+  gpt-pro-sidecar wait <run-dir> [--timeout <ms>]
   gpt-pro-sidecar show <run-dir>
 
 `start` reads the GPT-PRO prompt from stdin and returns immediately.
+`wait` blocks until the run has a receipt and then prints the result.
 `flagship` waits for an existing run and sends a final strengthening prompt to the same chat.
 USAGE
 }
@@ -158,13 +160,16 @@ status() {
   local pid=""
   [[ -f "$run_dir/pid" ]] && pid="$(cat "$run_dir/pid")"
   if [[ -f "$run_dir/exit_code" ]]; then
+    local code
+    code="$(cat "$run_dir/exit_code")"
     cat <<OUT
 DONE
 run: $run_dir
-exit: $(cat "$run_dir/exit_code")
+exit: $code
 stdout: $run_dir/stdout.txt
 stderr: $run_dir/stderr.txt
 OUT
+    print_result_fields "$run_dir"
     return
   fi
   if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
@@ -182,6 +187,7 @@ reason: worker exited before writing exit_code
 stdout: $run_dir/stdout.txt
 stderr: $run_dir/stderr.txt
 OUT
+  print_result_fields "$run_dir"
 }
 
 field_from_stdout() {
@@ -189,6 +195,40 @@ field_from_stdout() {
   local field="${2:?missing field}"
   [[ -f "$run_dir/stdout.txt" ]] || return 1
   awk -F': ' -v key="$field" '$1 == key {print substr($0, length(key) + 3); exit}' "$run_dir/stdout.txt"
+}
+
+error_summary() {
+  local run_dir="${1:?missing run-dir}"
+  [[ -f "$run_dir/stderr.txt" ]] || return 1
+  awk '
+    NF {
+      lines[++n]=$0
+    }
+    END {
+      if (n >= 2 && lines[1] == "ERROR") print lines[2]
+      else if (n >= 1) print lines[1]
+    }
+  ' "$run_dir/stderr.txt"
+}
+
+print_result_fields() {
+  local run_dir="${1:?missing run-dir}"
+  local answer receipt warnings url project files error
+  answer="$(field_from_stdout "$run_dir" "answer" || true)"
+  files="$(field_from_stdout "$run_dir" "files" || true)"
+  receipt="$(field_from_stdout "$run_dir" "receipt" || true)"
+  project="$(field_from_stdout "$run_dir" "project" || true)"
+  warnings="$(field_from_stdout "$run_dir" "warnings" || true)"
+  url="$(field_from_stdout "$run_dir" "url" || true)"
+  [[ -n "$answer" ]] && printf 'answer: %s\n' "$answer"
+  [[ -n "$files" ]] && printf 'files: %s\n' "$files"
+  [[ -n "$receipt" ]] && printf 'receipt: %s\n' "$receipt"
+  [[ -n "$project" ]] && printf 'project: %s\n' "$project"
+  [[ -n "$warnings" ]] && printf 'warnings: %s\n' "$warnings"
+  [[ -n "$url" ]] && printf 'url: %s\n' "$url"
+  error="$(error_summary "$run_dir" || true)"
+  [[ -n "$error" ]] && printf 'error: %s\n' "$error"
+  return 0
 }
 
 flagship() {
@@ -289,7 +329,54 @@ exit: $code
 stdout: $out_dir/stdout.txt
 stderr: $out_dir/stderr.txt
 OUT
+  print_result_fields "$out_dir"
   return "$code"
+}
+
+wait_run() {
+  local run_dir="${1:?missing run-dir}"
+  shift || true
+  local timeout_ms="${GPT_PRO_SIDECAR_WAIT_TIMEOUT_MS:-1200000}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --timeout)
+        timeout_ms="${2:?missing --timeout value}"
+        shift 2
+        ;;
+      *)
+        echo "ERROR unknown wait option: $1" >&2
+        exit 2
+        ;;
+    esac
+  done
+  if [[ ! "$timeout_ms" =~ ^[0-9]+$ ]] || [[ "$timeout_ms" -le 0 ]]; then
+    echo "ERROR --timeout must be a positive number of milliseconds" >&2
+    exit 2
+  fi
+
+  local start_ms now_ms deadline pid code
+  start_ms="$(date +%s)000"
+  deadline=$((start_ms + timeout_ms))
+  while true; do
+    if [[ -f "$run_dir/exit_code" ]]; then
+      show "$run_dir"
+      code="$(cat "$run_dir/exit_code")"
+      return "$code"
+    fi
+    pid=""
+    [[ -f "$run_dir/pid" ]] && pid="$(cat "$run_dir/pid")"
+    if [[ -z "$pid" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
+      show "$run_dir"
+      return 3
+    fi
+    now_ms="$(date +%s)000"
+    if [[ "$now_ms" -ge "$deadline" ]]; then
+      echo "ERROR wait timed out: $run_dir" >&2
+      status "$run_dir" >&2
+      return 124
+    fi
+    sleep 2
+  done
 }
 
 show() {
@@ -302,6 +389,29 @@ show() {
   echo
   echo "== stderr =="
   [[ -f "$run_dir/stderr.txt" ]] && cat "$run_dir/stderr.txt" || true
+  local answer_file receipt_file
+  answer_file="$(field_from_stdout "$run_dir" "answer" || true)"
+  receipt_file="$(field_from_stdout "$run_dir" "receipt" || true)"
+  if [[ -n "$answer_file" && -f "$answer_file" ]]; then
+    echo
+    echo "== answer =="
+    cat "$answer_file"
+  fi
+  if [[ -n "$receipt_file" && -f "$receipt_file" ]]; then
+    echo
+    echo "== receipt =="
+    node -e '
+      const fs = require("fs");
+      const receipt = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      console.log(`status: ${receipt.status || "unknown"}`);
+      console.log(`warnings: ${(receipt.warnings || []).length}`);
+      if ((receipt.warnings || []).length) {
+        for (const warning of receipt.warnings.slice(0, 5)) console.log(`warning: ${warning}`);
+      }
+      console.log(`files: ${(receipt.files || []).length}`);
+    ' "$receipt_file" || true
+  fi
+  return 0
 }
 
 case "${1:-}" in
@@ -316,6 +426,10 @@ case "${1:-}" in
   status)
     shift
     status "$@"
+    ;;
+  wait)
+    shift
+    wait_run "$@"
     ;;
   show)
     shift

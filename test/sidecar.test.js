@@ -90,7 +90,12 @@ fs.writeFileSync(answerPath, session === 'new' ? 'FIRST PASS CONTENT' : 'FLAGSHI
 fs.appendFileSync(path.join(fakeDir, 'calls.jsonl'), JSON.stringify({ args, session, project, timeout, githubRepos, prompt, answerPath }) + '\\n');
 console.log('OK');
 console.log('answer: ' + answerPath);
+console.log('files: ' + path.join(fakeDir, 'files-' + count));
+console.log('receipt: ' + path.join(fakeDir, 'receipt-' + count + '.json'));
+console.log('project: ' + project);
+console.log('warnings: 0');
 console.log('url: https://chatgpt.com/c/fake-' + count);
+fs.writeFileSync(path.join(fakeDir, 'receipt-' + count + '.json'), JSON.stringify({ status: 'ok', warnings: [], files: [{ path: 'answer.md' }] }));
 `, { mode: 0o755 });
 
   const env = {
@@ -119,6 +124,23 @@ console.log('url: https://chatgpt.com/c/fake-' + count);
   await waitForFile(path.join(runDir, 'exit_code'));
   assert.equal((await fs.readFile(path.join(runDir, 'exit_code'), 'utf8')).trim(), '0');
 
+  const status = await runSidecar(['status', runDir], { env });
+  assert.equal(status.code, 0, status.stderr);
+  assert.match(status.stdout, /^DONE/m);
+  assert.match(status.stdout, /^answer: .+answer-1\.md$/m);
+  assert.match(status.stdout, /^receipt: .+receipt-1\.json$/m);
+  assert.match(status.stdout, /^project: WORK_PROJECT$/m);
+  assert.match(status.stdout, /^warnings: 0$/m);
+
+  const shown = await runSidecar(['show', runDir], { env });
+  assert.equal(shown.code, 0, shown.stderr);
+  assert.match(shown.stdout, /== answer ==\nFIRST PASS CONTENT/);
+  assert.match(shown.stdout, /== receipt ==\nstatus: ok\nwarnings: 0\nfiles: 1/);
+
+  const waited = await runSidecar(['wait', runDir, '--timeout', '5000'], { env });
+  assert.equal(waited.code, 0, waited.stderr);
+  assert.match(waited.stdout, /== answer ==\nFIRST PASS CONTENT/);
+
   const flagship = await runSidecar([
     'flagship',
     runDir,
@@ -129,6 +151,7 @@ console.log('url: https://chatgpt.com/c/fake-' + count);
   ], { env, input: 'Extra pressure from Codex' });
   assert.equal(flagship.code, 0, flagship.stderr);
   assert.match(flagship.stdout, /^DONE/m);
+  assert.match(flagship.stdout, /^answer: .+answer-2\.md$/m);
 
   const calls = (await fs.readFile(path.join(fakeDir, 'calls.jsonl'), 'utf8'))
     .trim()
@@ -186,3 +209,4 @@ test('gpt-pro-sidecar status fails closed for dead workers without receipts', as
   assert.match(result.stdout, /^FAILED/m);
   assert.match(result.stdout, /worker exited before writing exit_code/);
 });
+

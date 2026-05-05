@@ -10,13 +10,13 @@ answer plus files on disk. It is a browser bridge, not an OpenAI API client.
 ## Install
 
 ```sh
-npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.12/gpt-pro-cli-0.1.12.tgz
+npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.13/gpt-pro-cli-0.1.13.tgz
 ```
 
 Or install the same release from the Git tag:
 
 ```sh
-npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.12
+npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.13
 ```
 
 For local development:
@@ -54,17 +54,19 @@ Agents can also use the bundled sidecar helper for quiet parallel thinking:
 ```sh
 printf '%s\n' "Question for GPT PRO" | gpt-pro-sidecar start --label side-thinking
 printf '%s\n' "Repo-grounded question" | gpt-pro-sidecar start --label review --github-repo AmirTlinov/gpt-pro-cli
-gpt-pro-sidecar status <run-dir>
+gpt-pro-sidecar wait <run-dir>
 printf '%s\n' "Final pressure" | gpt-pro-sidecar flagship <run-dir>
 ```
 
 `gpt-pro-sidecar start` returns a run directory immediately and detaches a real
 worker process, so the browser action survives after the calling agent's shell
-turn exits. `status` is fail-closed: a dead worker without `exit_code` is
-reported as `FAILED`, not as a forever-pending run. `flagship` waits for the
-first completed run output and asks the same ChatGPT thread for a final
-strengthening pass, so agent workflows can use GPT PRO without turning the chat
-into manual copy/paste.
+turn exits. `wait` blocks until completion and prints status, stdout, stderr, the
+answer body, and a compact receipt summary, so agents do not need to poll and
+then manually `cat` files. `status` is fail-closed: a dead worker without
+`exit_code` is reported as `FAILED`, not as a forever-pending run, and completed
+runs include answer/receipt/url fields inline. `flagship` asks the same ChatGPT
+thread for a final strengthening pass, so agent workflows can use GPT PRO
+without turning the chat into manual copy/paste.
 
 ## GitHub Grounding
 
