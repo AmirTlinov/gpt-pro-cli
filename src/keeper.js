@@ -3,7 +3,8 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execFile as execFileCallback } from 'node:child_process';
+import { promisify } from 'node:util';
 import { chromium } from 'playwright';
 import { chromeLaunchArgs } from './browser-launch.js';
 import { DEFAULT_BROWSER_MODE, PACKAGE_VERSION, paths, settings } from './config.js';
@@ -24,6 +25,8 @@ import {
   waitForLoggedIn,
 } from './chatgpt.js';
 
+const execFile = promisify(execFileCallback);
+
 const mode = ['headed', 'headless', 'background'].includes(process.env.GPT_PRO_KEEPER_MODE)
   ? process.env.GPT_PRO_KEEPER_MODE
   : DEFAULT_BROWSER_MODE;
@@ -40,6 +43,7 @@ let context;
 let browser;
 let chromeProcess;
 let activePage;
+let backgroundWindowParked = false;
 let idleTimer;
 let server;
 let browserQueue = Promise.resolve();
@@ -109,6 +113,65 @@ async function waitForCdp(port, { launchFailure = () => null } = {}) {
   throw new Error(`Timed out waiting for Chrome DevTools port ${port}${lastError ? `: ${lastError.message}` : ''}`);
 }
 
+async function findLaunchedChromePid(profileDir, port) {
+  const profileArg = `--user-data-dir=${path.resolve(profileDir)}`;
+  const portArg = `--remote-debugging-port=${port}`;
+  try {
+    const { stdout } = await execFile('ps', ['-axo', 'pid=,command='], { maxBuffer: 1024 * 1024 });
+    const match = stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.includes(profileArg) && line.includes(portArg))
+      .map((line) => line.match(/^(\d+)\s+(.+)$/))
+      .find((entry) => entry && /(^|\/)(Google Chrome|Chromium)(\.app\/Contents\/MacOS\/|\s|$)/i.test(entry[2]));
+    return match ? Number.parseInt(match[1], 10) : null;
+  } catch {
+    return null;
+  }
+}
+
+function chromeHandleForPid(pid) {
+  if (!pid) return null;
+  return {
+    pid,
+    kill(signal) {
+      try {
+        process.kill(pid, signal);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  };
+}
+
+function launchChromeProcess(chromePath, args, port) {
+  if (mode !== 'background' || process.env.GPT_PRO_CHROME_PATH || process.platform !== 'darwin') {
+    const child = spawn(chromePath, args, { stdio: 'ignore' });
+    return {
+      process: child,
+      launchName: chromePath,
+      trackActualPid: false,
+    };
+  }
+
+  const child = spawn('/usr/bin/open', [
+    '-g',
+    '-j',
+    '-n',
+    '-a',
+    'Google Chrome',
+    '--args',
+    ...args,
+  ], { stdio: 'ignore' });
+  return {
+    process: child,
+    launchName: '/usr/bin/open -gj -n -a Google Chrome',
+    trackActualPid: true,
+    port,
+  };
+}
+
 async function launchChromeWithCdp() {
   await ensureDir(rootPaths.profileDir);
   await ensureDir(rootPaths.runtimeDir);
@@ -119,22 +182,31 @@ async function launchChromeWithCdp() {
     await cleanupProfileProcesses(rootPaths.profileDir);
     const port = await freePort();
     let launchError = null;
-    chromeProcess = spawn(chromePath, chromeLaunchArgs({
+    const args = chromeLaunchArgs({
       port,
       profileDir: rootPaths.profileDir,
       mode,
       baseUrl: appSettings.baseUrl,
-    }), { stdio: 'ignore' });
-    chromeProcess.once('error', (error) => {
-      launchError = new Error(`Chrome failed to launch at ${chromePath}: ${error.message}`);
     });
-    chromeProcess.once('exit', (code, signal) => {
-      launchError ||= new Error(`Chrome exited before DevTools port ${port} became reachable (code=${code ?? 'null'} signal=${signal ?? 'null'})`);
-      chromeProcess = null;
+    const launched = launchChromeProcess(chromePath, args, port);
+    chromeProcess = launched.trackActualPid ? null : launched.process;
+    launched.process.once('error', (error) => {
+      launchError = new Error(`Chrome failed to launch via ${launched.launchName}: ${error.message}`);
+    });
+    launched.process.once('exit', (code, signal) => {
+      if (!launched.trackActualPid) {
+        launchError ||= new Error(`Chrome exited before DevTools port ${port} became reachable (code=${code ?? 'null'} signal=${signal ?? 'null'})`);
+        chromeProcess = null;
+      } else if (code && code !== 0) {
+        launchError ||= new Error(`Chrome open command failed before DevTools port ${port} became reachable (code=${code} signal=${signal ?? 'null'})`);
+      }
     });
 
     try {
       await waitForCdp(port, { launchFailure: () => launchError });
+      if (launched.trackActualPid) {
+        chromeProcess = chromeHandleForPid(await findLaunchedChromePid(rootPaths.profileDir, port));
+      }
       browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
       context = browser.contexts()[0];
       if (!context) throw new Error('Chrome DevTools connection did not expose a browser context');
@@ -149,11 +221,40 @@ async function launchChromeWithCdp() {
       chromeProcess = null;
       context = null;
       browser = null;
+      backgroundWindowParked = false;
       await cleanupProfileProcesses(rootPaths.profileDir);
     }
   }
 
   throw lastError || new Error('Chrome did not start');
+}
+
+async function parkBackgroundWindow(page) {
+  if (mode !== 'background' || backgroundWindowParked) return;
+  let session = null;
+  try {
+    session = await context.newCDPSession(page);
+    const { windowId } = await session.send('Browser.getWindowForTarget');
+    await session.send('Browser.setWindowBounds', {
+      windowId,
+      bounds: {
+        windowState: 'normal',
+        left: -24000,
+        top: -24000,
+        width: 1440,
+        height: 1000,
+      },
+    });
+    await session.send('Browser.setWindowBounds', {
+      windowId,
+      bounds: { windowState: 'minimized' },
+    });
+    backgroundWindowParked = true;
+  } catch {
+    // Launch flags still keep this best-effort background mode usable.
+  } finally {
+    await session?.detach?.().catch(() => {});
+  }
 }
 
 async function browserPage() {
@@ -164,6 +265,7 @@ async function browserPage() {
     context = null;
     browser = null;
     chromeProcess = null;
+    backgroundWindowParked = false;
     await cleanupProfileProcesses(rootPaths.profileDir);
   }
   if (!context) {
@@ -171,10 +273,12 @@ async function browserPage() {
   }
   if (activePage && !activePage.isClosed()) {
     await activePage.setViewportSize({ width: 1440, height: 1000 }).catch(() => {});
+    await parkBackgroundWindow(activePage);
     return activePage;
   }
   activePage = context.pages()[0] || await context.newPage();
   await activePage.setViewportSize({ width: 1440, height: 1000 }).catch(() => {});
+  await parkBackgroundWindow(activePage);
   return activePage;
 }
 
