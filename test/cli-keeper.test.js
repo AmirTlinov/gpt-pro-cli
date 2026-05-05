@@ -35,8 +35,8 @@ test('CLI status is quiet when keeper is stopped', async () => {
   assert.match(stdout, /^task: none$/m);
 });
 
-test('doctor defaults agent traffic to background browser mode', async () => {
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-doctor-background-'));
+test('doctor defaults agent traffic to headless browser mode', async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-doctor-headless-'));
   const { stdout } = await execFile(process.execPath, [cliPath, 'doctor'], {
     env: {
       ...process.env,
@@ -45,15 +45,23 @@ test('doctor defaults agent traffic to background browser mode', async () => {
     },
     timeout: 10_000,
   });
-  assert.match(stdout, /^browser-mode: background$/m);
+  assert.match(stdout, /^browser-mode: headless$/m);
 });
 
 test('macOS focus guard hides the automated Chrome instead of activating a stale desktop', async () => {
   const source = await fs.readFile(path.resolve('src/keeper.js'), 'utf8');
-  assert.match(source, /set visible of frontProc to false/);
+  assert.match(source, /application processes whose name is "Google Chrome" or name is "Chromium"/);
+  assert.match(source, /set visible of chromeProc to false/);
   assert.doesNotMatch(source, /set frontmost of first application process/);
   assert.doesNotMatch(source, /tell application previousApp to activate/);
   assert.doesNotMatch(source, /restorePreviousAppIfChromeIsFrontmost/);
+});
+
+test('macOS background launch avoids LaunchServices by default to prevent Space switching', async () => {
+  const source = await fs.readFile(path.resolve('src/keeper.js'), 'utf8');
+  assert.match(source, /GPT_PRO_MACOS_OPEN_LAUNCH === '1'/);
+  assert.match(source, /spawn\(chromePath, args/);
+  assert.doesNotMatch(source, /mode !== 'background'[\s\S]+\/usr\/bin\/open/);
 });
 
 async function profileProcessLines(profileDir) {
@@ -338,7 +346,7 @@ test('CLI ask progress reports semantic changes without elapsed-only noise on st
   }
 });
 
-test('background ask creates the first Chrome page without making Chrome frontmost on macOS', async (t) => {
+test('headless ask does not make Chrome frontmost on macOS', async (t) => {
   if (process.platform !== 'darwin') {
     t.skip('macOS focus ownership is only testable on darwin');
     return;
@@ -360,13 +368,13 @@ test('background ask creates the first Chrome page without making Chrome frontmo
     return;
   }
 
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-focus-e2e-'));
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-headless-focus-e2e-'));
   const { server, url } = await fakeChatGptServer();
   const env = {
     ...process.env,
     GPT_PRO_HOME: home,
     GPT_PRO_CHATGPT_URL: url,
-    GPT_PRO_BROWSER_MODE: 'background',
+    GPT_PRO_BROWSER_MODE: 'headless',
     GPT_PRO_OPERATION_TIMEOUT_MS: '15000',
     GPT_PRO_IDLE_MS: '60000',
     GPT_PRO_PROGRESS: '0',
@@ -380,13 +388,13 @@ test('background ask creates the first Chrome page without making Chrome frontmo
       '--timeout',
       '15000',
       '--',
-      'focus-safe background launch',
+      'focus-safe headless launch',
     ], { env, timeoutMs: 35_000 });
 
     assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
     assert.match(result.stdout, /^OK/m);
     const chromeSamples = result.samples.filter(isChromeApplicationName);
-    assert.deepEqual(chromeSamples, [], `Chrome became frontmost during background ask. samples=${result.samples.join(' -> ')}`);
+    assert.deepEqual(chromeSamples, [], `Chrome became frontmost during headless ask. samples=${result.samples.join(' -> ')}`);
   } finally {
     await execFile(process.execPath, [cliPath, 'stop'], { env, timeout: 10_000 }).catch(() => {});
     await new Promise((resolve) => server.close(resolve));

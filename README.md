@@ -160,29 +160,33 @@ membership.
 `GPT_PRO_PROJECT` changes the ChatGPT project name. `GPT_PRO_HOME` changes the
 local storage root.
 
-The default browser mode is `background`: agent asks use the persistent
-`~/gpt-pro/browser-profile` through Chrome's CDP path in a minimized/off-screen
-Chrome window. This is intentionally not true headless by default: current
-ChatGPT sessions can keep true headless Chrome on a long "One moment" protection
-screen even when the same profile is logged in. The default optimizes for a
-reliable agent run that does not steal the desktop.
+The default browser mode is `headless`: agent asks use the persistent
+`~/gpt-pro/browser-profile` through Chrome's CDP path without creating a macOS GUI
+window. This is the only mode that can honestly avoid focus theft and Spaces
+switching during normal agent work. Use `gpt-pro login` for the one intentional
+visible-login/recovery flow.
 
-On macOS background mode starts Chrome through LaunchServices with
-`--no-startup-window` by default, then opens the ChatGPT page only after CDP is
-connected and parks the window off-screen/minimized. `gpt-pro status` reports
-that parking state as `background-window: ...`, so agents can see whether the
-best-effort background contract was actually confirmed. Set
+`GPT_PRO_BROWSER_MODE=background` remains available as a GUI fallback for cases
+where ChatGPT blocks true headless mode with a protection/loading screen. On
+macOS that fallback starts the Chrome executable directly with
+`--no-startup-window`, avoids the `open -a Google Chrome` LaunchServices path, and
+parks the window off-screen/minimized after CDP connects. A small focus guard
+hides automation Chrome if macOS briefly brings it forward; it does not activate
+Ghostty/Finder or any stale desktop. This fallback is best-effort: macOS can still
+move Spaces for GUI apps, so it is not the default for agent asks. `gpt-pro status`
+reports the parking state as `background-window: ...`. Set
 `GPT_PRO_MACOS_NO_STARTUP_WINDOW=0` only if your Chrome build rejects that launch
-flag. Set `GPT_PRO_STRICT_BACKGROUND=1` when a run must fail before prompt
-submission unless the background window was confirmed parked.
+flag. Set `GPT_PRO_MACOS_OPEN_LAUNCH=1` only as a legacy fallback if direct Chrome
+startup breaks on your machine. Set `GPT_PRO_STRICT_BACKGROUND=1` when a fallback
+run must fail before prompt submission unless the background window was confirmed
+parked.
 
 `gpt-pro doctor` prints both the CLI version and keeper version. If a keeper from
 an older install is still alive, the next `ask`/`smoke` automatically restarts it
 instead of reusing a stale browser worker.
 
 `gpt-pro login` intentionally opens visible Chrome so you can complete auth or a
-human challenge. True headless mode remains available explicitly with
-`GPT_PRO_BROWSER_MODE=headless`; if ChatGPT keeps it on a protection/loading
+human challenge. If ChatGPT keeps default headless mode on a protection/loading
 screen, the CLI fails closed instead of silently falling back to a visible
 browser. Fully visible agent traffic is available with
 `GPT_PRO_BROWSER_MODE=headed`.

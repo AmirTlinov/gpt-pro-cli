@@ -112,11 +112,9 @@ on run
   repeat
     try
       tell application "System Events"
-        set frontProc to first application process whose frontmost is true
-        set frontApp to name of frontProc
-        if (frontApp is "Google Chrome" or frontApp is "Chromium") then
-          set visible of frontProc to false
-        end if
+        repeat with chromeProc in (application processes whose name is "Google Chrome" or name is "Chromium")
+          set visible of chromeProc to false
+        end repeat
       end tell
     end try
     delay 0.005
@@ -339,29 +337,32 @@ function chromeHandleForPid(pid) {
 }
 
 function launchChromeProcess(chromePath, args, port) {
-  if (mode !== 'background' || process.env.GPT_PRO_CHROME_PATH || process.platform !== 'darwin') {
-    const child = spawn(chromePath, args, { stdio: 'ignore' });
+  if (mode === 'background'
+    && process.platform === 'darwin'
+    && !process.env.GPT_PRO_CHROME_PATH
+    && process.env.GPT_PRO_MACOS_OPEN_LAUNCH === '1') {
+    const child = spawn('/usr/bin/open', [
+      '-g',
+      '-j',
+      '-n',
+      '-a',
+      'Google Chrome',
+      '--args',
+      ...args,
+    ], { stdio: 'ignore' });
     return {
       process: child,
-      launchName: chromePath,
-      trackActualPid: false,
+      launchName: '/usr/bin/open -gj -n -a Google Chrome',
+      trackActualPid: true,
+      port,
     };
   }
 
-  const child = spawn('/usr/bin/open', [
-    '-g',
-    '-j',
-    '-n',
-    '-a',
-    'Google Chrome',
-    '--args',
-    ...args,
-  ], { stdio: 'ignore' });
+  const child = spawn(chromePath, args, { stdio: 'ignore' });
   return {
     process: child,
-    launchName: '/usr/bin/open -gj -n -a Google Chrome',
-    trackActualPid: true,
-    port,
+    launchName: chromePath,
+    trackActualPid: false,
   };
 }
 

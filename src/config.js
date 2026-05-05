@@ -7,7 +7,7 @@ const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import
 export const PACKAGE_VERSION = packageJson.version;
 export const DEFAULT_IDLE_MS = 20 * 60 * 1000;
 export const DEFAULT_PROJECT_NAME = 'CLI_QUESTIONS';
-export const DEFAULT_BROWSER_MODE = 'background';
+export const DEFAULT_BROWSER_MODE = 'headless';
 
 export function homeDir() {
   return process.env.GPT_PRO_HOME || path.join(os.homedir(), 'gpt-pro');
