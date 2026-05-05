@@ -167,6 +167,15 @@ ChatGPT sessions can keep true headless Chrome on a long "One moment" protection
 screen even when the same profile is logged in. The default optimizes for a
 reliable agent run that does not steal the desktop.
 
+On macOS background mode starts Chrome through LaunchServices with
+`--no-startup-window` by default, then opens the ChatGPT page only after CDP is
+connected and parks the window off-screen/minimized. `gpt-pro status` reports
+that parking state as `background-window: ...`, so agents can see whether the
+best-effort background contract was actually confirmed. Set
+`GPT_PRO_MACOS_NO_STARTUP_WINDOW=0` only if your Chrome build rejects that launch
+flag. Set `GPT_PRO_STRICT_BACKGROUND=1` when a run must fail before prompt
+submission unless the background window was confirmed parked.
+
 `gpt-pro doctor` prints both the CLI version and keeper version. If a keeper from
 an older install is still alive, the next `ask`/`smoke` automatically restarts it
 instead of reusing a stale browser worker.

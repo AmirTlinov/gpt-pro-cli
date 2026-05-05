@@ -43,13 +43,59 @@ let context;
 let browser;
 let chromeProcess;
 let activePage;
-let backgroundWindowParked = false;
 let idleTimer;
 let server;
 let browserQueue = Promise.resolve();
 let browserQueueDepth = 0;
 let currentTask = null;
 const reservedDownloadTargets = new Set();
+
+function shouldUseNoStartupWindow() {
+  return mode === 'background'
+    && process.platform === 'darwin'
+    && !process.env.GPT_PRO_CHROME_PATH
+    && appSettings.macosNoStartupWindow;
+}
+
+function initialBackgroundWindowState() {
+  return {
+    attempted: false,
+    parked: false,
+    windowId: null,
+    bounds: null,
+    error: null,
+    strict: appSettings.strictBackground,
+    noStartupWindow: shouldUseNoStartupWindow(),
+    updatedAt: null,
+  };
+}
+
+let backgroundWindow = initialBackgroundWindowState();
+
+function resetBackgroundWindow() {
+  backgroundWindow = initialBackgroundWindowState();
+}
+
+function normalizeWindowBounds(bounds) {
+  if (!bounds) return null;
+  const raw = bounds.bounds || bounds;
+  return {
+    windowState: raw.windowState || null,
+    left: Number.isFinite(raw.left) ? raw.left : null,
+    top: Number.isFinite(raw.top) ? raw.top : null,
+    width: Number.isFinite(raw.width) ? raw.width : null,
+    height: Number.isFinite(raw.height) ? raw.height : null,
+  };
+}
+
+function windowIsParked(bounds) {
+  if (!bounds) return false;
+  if (bounds.windowState === 'minimized') return true;
+  return Number.isFinite(bounds.left)
+    && Number.isFinite(bounds.top)
+    && bounds.left <= -1000
+    && bounds.top <= -1000;
+}
 
 async function runBrowserTask(task) {
   browserQueueDepth += 1;
@@ -187,6 +233,7 @@ async function launchChromeWithCdp() {
       profileDir: rootPaths.profileDir,
       mode,
       baseUrl: appSettings.baseUrl,
+      noStartupWindow: shouldUseNoStartupWindow(),
     });
     const launched = launchChromeProcess(chromePath, args, port);
     chromeProcess = launched.trackActualPid ? null : launched.process;
@@ -221,7 +268,7 @@ async function launchChromeWithCdp() {
       chromeProcess = null;
       context = null;
       browser = null;
-      backgroundWindowParked = false;
+      resetBackgroundWindow();
       await cleanupProfileProcesses(rootPaths.profileDir);
     }
   }
@@ -230,9 +277,15 @@ async function launchChromeWithCdp() {
 }
 
 async function parkBackgroundWindow(page) {
-  if (mode !== 'background' || backgroundWindowParked) return;
+  if (mode !== 'background' || backgroundWindow.parked) return;
   let session = null;
   try {
+    backgroundWindow = {
+      ...backgroundWindow,
+      attempted: true,
+      error: null,
+      updatedAt: new Date().toISOString(),
+    };
     session = await context.newCDPSession(page);
     const { windowId } = await session.send('Browser.getWindowForTarget');
     await session.send('Browser.setWindowBounds', {
@@ -245,12 +298,45 @@ async function parkBackgroundWindow(page) {
         height: 1000,
       },
     });
+    const offscreenBounds = normalizeWindowBounds(await session.send('Browser.getWindowBounds', { windowId }).catch(async () => {
+      const next = await session.send('Browser.getWindowForTarget').catch(() => null);
+      return next?.bounds || null;
+    }));
     await session.send('Browser.setWindowBounds', {
       windowId,
       bounds: { windowState: 'minimized' },
     });
-    backgroundWindowParked = true;
-  } catch {
+    const minimizedBounds = normalizeWindowBounds(await session.send('Browser.getWindowBounds', { windowId }).catch(async () => {
+      const next = await session.send('Browser.getWindowForTarget').catch(() => null);
+      return next?.bounds || null;
+    }));
+    const parked = windowIsParked(minimizedBounds) || windowIsParked(offscreenBounds);
+    const bounds = minimizedBounds || offscreenBounds;
+    backgroundWindow = {
+      ...backgroundWindow,
+      windowId,
+      bounds,
+      parked,
+      error: parked ? null : 'Chrome window bounds did not confirm minimized/offscreen parking',
+      updatedAt: new Date().toISOString(),
+    };
+    if (backgroundWindow.strict && !parked) {
+      const parkingError = new Error(`Background Chrome window could not be parked before prompt submission. bounds=${JSON.stringify(bounds)}`);
+      parkingError.code = 'BACKGROUND_PARKING_FAILED';
+      throw parkingError;
+    }
+  } catch (error) {
+    backgroundWindow = {
+      ...backgroundWindow,
+      attempted: true,
+      parked: false,
+      error: error.message,
+      updatedAt: new Date().toISOString(),
+    };
+    if (backgroundWindow.strict) {
+      if (error.code === 'BACKGROUND_PARKING_FAILED') throw error;
+      throw new Error(`Background Chrome window could not be parked before prompt submission: ${error.message}`);
+    }
     // Launch flags still keep this best-effort background mode usable.
   } finally {
     await session?.detach?.().catch(() => {});
@@ -265,7 +351,7 @@ async function browserPage() {
     context = null;
     browser = null;
     chromeProcess = null;
-    backgroundWindowParked = false;
+    resetBackgroundWindow();
     await cleanupProfileProcesses(rootPaths.profileDir);
   }
   if (!context) {
@@ -338,6 +424,7 @@ async function keeperStatus() {
     profileDir: rootPaths.profileDir,
     browserPid: chromeProcess?.pid || null,
     browserAlive,
+    backgroundWindow,
     queueDepth: browserQueueDepth,
     task: currentTask,
     page: pageStatus,
@@ -387,6 +474,7 @@ async function handle(req, res) {
         profileDir: rootPaths.profileDir,
         browserPid: chromeProcess?.pid || null,
         browserAlive,
+        backgroundWindow,
         queueDepth: browserQueueDepth,
         task: currentTask,
       });
@@ -603,6 +691,8 @@ async function main() {
     token,
     mode,
     version: PACKAGE_VERSION,
+    macosNoStartupWindow: shouldUseNoStartupWindow(),
+    strictBackground: appSettings.strictBackground,
     startedAt: new Date().toISOString(),
     profileDir: rootPaths.profileDir,
     logFile: rootPaths.logFile,

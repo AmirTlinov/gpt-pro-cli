@@ -60,6 +60,28 @@ function compactLine(value, max = 180) {
   return `${text.slice(0, Math.max(0, max - 1))}…`;
 }
 
+function formatBackgroundWindowLine(backgroundWindow) {
+  if (!backgroundWindow) return '';
+  const bounds = backgroundWindow.bounds || {};
+  const state = backgroundWindow.parked
+    ? 'parked'
+    : backgroundWindow.attempted
+      ? 'not-parked'
+      : 'not-attempted';
+  const parts = [
+    state,
+    `attempted=${Boolean(backgroundWindow.attempted)}`,
+    `no-startup-window=${Boolean(backgroundWindow.noStartupWindow)}`,
+    `strict=${Boolean(backgroundWindow.strict)}`,
+  ];
+  if (backgroundWindow.windowId !== null && backgroundWindow.windowId !== undefined) parts.push(`window-id=${backgroundWindow.windowId}`);
+  if (bounds.windowState) parts.push(`state=${bounds.windowState}`);
+  if (bounds.left !== null && bounds.left !== undefined) parts.push(`left=${bounds.left}`);
+  if (bounds.top !== null && bounds.top !== undefined) parts.push(`top=${bounds.top}`);
+  if (backgroundWindow.error) parts.push(`error=${compactLine(backgroundWindow.error, 140)}`);
+  return `background-window: ${parts.join(' ')}`;
+}
+
 function resolvePath(value) {
   if (!value) return null;
   return path.resolve(process.cwd(), value);
@@ -357,6 +379,7 @@ async function doctor() {
     `chatgpt: ${settings().baseUrl}`,
     `project: ${settings().projectName}`,
     `browser-mode: ${settings().browserMode}`,
+    `background-window: no-startup-window=${settings().macosNoStartupWindow ? 'on' : 'off'} strict=${settings().strictBackground ? 'on' : 'off'}`,
     `version: ${PACKAGE_VERSION}`,
     `chrome: ${chromeFound ? chromeApp : 'not found at /Applications/Google Chrome.app'}`,
     `keeper: ${keeperLine}`,
@@ -374,6 +397,8 @@ function formatKeeperStatus(status) {
     `keeper: ${status.browserAlive ? `${status.mode} pid=${status.pid} browser=${status.browserPid || ''}` : 'unhealthy'}`,
     `queue-depth: ${status.queueDepth ?? 0}`,
   ];
+  const backgroundLine = formatBackgroundWindowLine(status.backgroundWindow);
+  if (backgroundLine) lines.push(backgroundLine);
   if (task) {
     const elapsedMs = task.startedAt ? Date.now() - Date.parse(task.startedAt) : null;
     lines.push(`task: ${task.command || 'unknown'} ${task.phase || task.state || 'running'}${elapsedMs ? ` elapsed=${formatDuration(elapsedMs)}` : ''}`);
@@ -440,6 +465,28 @@ function progressSignature(status) {
     thought: compactLine(thought, 180),
     url: page.url || null,
   });
+}
+
+function askHttpTimeoutMs(options, preflightStatus = null) {
+  const queuedOrRunning = Math.max(0, Number(preflightStatus?.queueDepth || 0));
+  const perTaskBudgetMs = Math.max(settings().operationTimeoutMs, options.timeoutMs);
+  return options.timeoutMs
+    + settings().downloadTimeoutMs
+    + 60_000
+    + queuedOrRunning * (perTaskBudgetMs + settings().downloadTimeoutMs + 60_000);
+}
+
+function enrichKeeperTimeoutError(error, requestTimeoutMs, liveStatus = null) {
+  if (error?.name !== 'AbortError') return error;
+  const task = liveStatus?.task || null;
+  const queueDepth = liveStatus?.queueDepth ?? 0;
+  const state = task
+    ? ` keeper still reports ${task.command || 'task'}:${task.phase || task.state || 'running'} queue-depth=${queueDepth}`
+    : ` keeper status queue-depth=${queueDepth}`;
+  const enriched = new Error(`Timed out waiting for the keeper HTTP response after ${formatDuration(requestTimeoutMs)};${state}. The browser task is bounded by its own ChatGPT timeout, so no answer was accepted without capture. Run "gpt-pro status" before retrying.`);
+  enriched.name = 'KeeperTimeoutError';
+  enriched.cause = error;
+  return enriched;
 }
 
 async function reportProgressUntil(runtime, promise) {
@@ -524,7 +571,8 @@ async function runAsk(options) {
     const resolvedSession = await resolveSessionOption(options.session, options.project);
     const projectCache = await readSessionCache(options.project);
     const runtime = await ensureKeeper({ mode: settings().browserMode });
-    const requestTimeoutMs = options.timeoutMs + settings().downloadTimeoutMs + 15_000;
+    const preflightStatus = await keeperRequest(runtime, '/status', {}, 5000).catch(() => null);
+    const requestTimeoutMs = askHttpTimeoutMs(options, preflightStatus);
     const askPromise = keeperRequest(runtime, '/ask', {
       session: resolvedSession.session,
       projectName: options.project,
@@ -535,10 +583,16 @@ async function runAsk(options) {
       downloadDir: pendingFiles,
       timeoutMs: options.timeoutMs,
     }, requestTimeoutMs);
-    const result = await Promise.race([
-      askPromise,
-      reportProgressUntil(runtime, askPromise).then(() => askPromise),
-    ]);
+    let result;
+    try {
+      result = await Promise.race([
+        askPromise,
+        reportProgressUntil(runtime, askPromise).then(() => askPromise),
+      ]);
+    } catch (error) {
+      const live = await keeperRequest(runtime, '/status', {}, 5000).catch(() => null);
+      throw enrichKeeperTimeoutError(error, requestTimeoutMs, live);
+    }
 
     const sessionSlug = sessionSlugFromUrl(result.url, resolvedSession.session);
     const messageDir = await nextMessageDir(sessionSlug);

@@ -105,6 +105,10 @@ const BLOCKER_PATTERNS = [
   },
 ];
 
+function isLoadingInterstitialTitle(title) {
+  return /^(one moment|just a moment|один момент)/i.test(String(title || '').trim());
+}
+
 function projectKeyFromUrl(value) {
   try {
     const url = new URL(value);
@@ -138,7 +142,7 @@ function projectUrlFromCurrentUrl(value, projectName = '') {
   }
 }
 
-export async function detectChatGptBlocker(page) {
+export async function detectChatGptBlocker(page, options = {}) {
   let snapshot = null;
   try {
     snapshot = await page.evaluate(() => {
@@ -158,6 +162,22 @@ export async function detectChatGptBlocker(page) {
       const hasVisibleComposer = composerSelectors.some((selector) => (
         Array.from(document.querySelectorAll(selector)).some(visible)
       ));
+      const authLabels = [
+        'log in',
+        'login',
+        'sign in',
+        'sign up',
+        'get started',
+        'войти',
+        'регистрация',
+        'зарегистрироваться',
+      ];
+      const hasVisibleAuthAction = Array.from(document.querySelectorAll('a,button,[role="button"]'))
+        .filter(visible)
+        .some((node) => {
+          const lower = (node.innerText || node.textContent || node.getAttribute('aria-label') || '').trim().toLowerCase();
+          return authLabels.some((label) => lower === label || lower.includes(label));
+        });
       const modalNodes = Array.from(document.querySelectorAll([
         '[role="dialog"]',
         '[aria-modal="true"]',
@@ -179,13 +199,30 @@ export async function detectChatGptBlocker(page) {
         .replace(/\s+/g, ' ')
         .trim()
         .slice(0, 4000);
-      return { text, url: window.location.href };
+      return {
+        text,
+        url: window.location.href,
+        title: document.title || '',
+        hasVisibleComposer,
+        hasVisibleAuthAction,
+      };
     });
   } catch {
     return null;
   }
 
   const text = snapshot?.text || '';
+  if (options.includeLoadingInterstitial
+    && isLoadingInterstitialTitle(snapshot?.title)
+    && !snapshot?.hasVisibleComposer
+    && !snapshot?.hasVisibleAuthAction) {
+    return {
+      code: 'loading_interstitial',
+      message: 'ChatGPT is stuck on a loading/protection interstitial ("One moment"). True headless mode may be blocked; use background mode or run "gpt-pro login" for manual recovery.',
+      url: snapshot.url || page.url(),
+      text: snapshot.title || text.slice(0, 500),
+    };
+  }
   for (const blocker of BLOCKER_PATTERNS) {
     if (blocker.patterns.some((pattern) => pattern.test(text))) {
       return {
@@ -1354,13 +1391,13 @@ export async function waitForLoggedIn(page, timeoutMs = 10 * 60_000, options = {
     await assertNoChatGptBlocker(page);
     lastSnapshot = await authSnapshot(page);
     if (lastSnapshot.loggedIn) return true;
-    const loadingInterstitial = /^(one moment|just a moment|один момент)/i.test(lastSnapshot.title || '')
+    const loadingInterstitial = isLoadingInterstitialTitle(lastSnapshot.title)
       && !lastSnapshot.hasComposer
       && !lastSnapshot.hasUnauthAction;
     if (loadingInterstitial) {
       interstitialSince ||= Date.now();
       if (options.failFastUnauth && Date.now() - interstitialSince > 20_000) {
-        throw new Error(`ChatGPT is stuck on a loading/protection interstitial. True headless browser mode may be blocked; use the default background mode or run "gpt-pro login" for manual recovery. url=${lastSnapshot.url}; title=${lastSnapshot.title}; composer=${lastSnapshot.hasComposer}; auth actions=${lastSnapshot.unauthActions.join(', ') || 'none'}`);
+        throw new Error(`ChatGPT is stuck on a loading/protection interstitial. True headless browser mode may be blocked; use the default background mode or run "gpt-pro login" for manual recovery. url=${lastSnapshot.url}; title=${lastSnapshot.title}; composer=${lastSnapshot.hasComposer}; auth actions=${lastSnapshot.unauthActions.join(', ') || 'none'}; blocker=loading_interstitial`);
       }
     } else {
       interstitialSince = 0;
@@ -1731,6 +1768,43 @@ export async function extractVisibleReasoning(page) {
       return spread < 24 && r >= 90 && r <= 180 && g >= 90 && g <= 180 && b >= 90 && b <= 180;
     }
 
+    function markerText(node) {
+      const tag = String(node.tagName || '').toLowerCase();
+      const role = String(node.getAttribute?.('role') || '').toLowerCase();
+      const isControl = tag === 'button' || tag === 'summary' || role === 'button';
+      return normalized([
+        isControl ? (node.innerText || '') : '',
+        isControl ? (node.textContent || '') : '',
+        node.getAttribute?.('aria-label') || '',
+        node.getAttribute?.('title') || '',
+        node.getAttribute?.('data-testid') || '',
+        node.className || '',
+      ].join(' ')).toLowerCase();
+    }
+
+    function hasReasoningMarker(node) {
+      const text = markerText(node);
+      return text.includes('думает')
+        || text.includes('мысли')
+        || text.includes('рассуж')
+        || text.includes('thinking')
+        || text.includes('reasoning')
+        || text.includes('thought');
+    }
+
+    function isInsideReasoningSurface(node) {
+      return Boolean(node.closest?.([
+        '[data-gpt-pro-reasoning]',
+        '[data-testid*="reasoning" i]',
+        '[data-testid*="thinking" i]',
+        '[data-testid*="thought" i]',
+        '[class*="reasoning" i]',
+        '[class*="thinking" i]',
+        '[class*="thought" i]',
+        'details',
+      ].join(',')));
+    }
+
     const strongSelectors = [
       '[data-gpt-pro-reasoning]',
       '[data-testid*="reasoning" i]',
@@ -1751,8 +1825,7 @@ export async function extractVisibleReasoning(page) {
     for (const node of Array.from(document.querySelectorAll('main button, main [role="button"], main p, main span, main div'))) {
       const text = normalized(node.innerText || node.textContent || node.getAttribute('aria-label') || '');
       if (!text || text.length < 8 || text.length > 1200) continue;
-      const lower = text.toLowerCase();
-      if (lower.includes('думает') || lower.includes('thinking') || lower.includes('reasoning') || isGreyish(node)) {
+      if (hasReasoningMarker(node) || (isGreyish(node) && isInsideReasoningSurface(node))) {
         nodes.push(node);
       }
     }
@@ -1773,7 +1846,7 @@ export async function extractVisibleReasoning(page) {
 }
 
 export async function extractLiveStatus(page, options = {}) {
-  const blocker = await detectChatGptBlocker(page);
+  const blocker = await detectChatGptBlocker(page, { includeLoadingInterstitial: true });
   const generating = await isGenerating(page);
   const auth = await authSnapshot(page).catch(() => null);
   const reasoning = await extractVisibleReasoning(page).catch(() => '');

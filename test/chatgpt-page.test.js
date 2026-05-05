@@ -1479,6 +1479,31 @@ test('ChatGPT blocker detection ignores ordinary chat text', async (t) => {
   await browser.close();
 });
 
+test('ChatGPT loading interstitial is visible in live blocker status only', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const page = await browser.newPage();
+  await page.setContent(`
+    <!doctype html>
+    <title>Один момент...</title>
+    <main>
+      <p>Checking your browser before accessing ChatGPT.</p>
+    </main>
+  `);
+
+  assert.equal(await detectChatGptBlocker(page), null);
+  const blocker = await detectChatGptBlocker(page, { includeLoadingInterstitial: true });
+  assert.equal(blocker.code, 'loading_interstitial');
+  assert.match(blocker.message, /One moment|loading\/protection/);
+  await browser.close();
+});
+
 test('visible reasoning extraction opens and captures grey thinking summaries', async (t) => {
   let browser;
   try {
@@ -1515,6 +1540,31 @@ test('visible reasoning extraction opens and captures grey thinking summaries', 
   const second = await extractVisibleReasoning(page);
   assert.match(second, /When cleanup fails/);
   assert.equal(await page.locator('#thought-button').getAttribute('aria-expanded'), 'true');
+  await browser.close();
+});
+
+test('visible reasoning extraction ignores ordinary grey assistant controls', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const page = await browser.newPage();
+  await page.setContent(`
+    <main>
+      <article data-message-author-role="assistant">
+        <button style="color: rgb(140, 140, 140)">Скопировать сообщение</button>
+        <button style="color: rgb(140, 140, 140)">Поделиться промптом</button>
+        <p style="color: rgb(140, 140, 140)">Ordinary grey answer text, not a reasoning panel.</p>
+      </article>
+    </main>
+  `);
+
+  const reasoning = await extractVisibleReasoning(page);
+  assert.equal(reasoning, '');
   await browser.close();
 });
 

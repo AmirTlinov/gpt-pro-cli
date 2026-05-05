@@ -17,6 +17,19 @@ test('background Chrome launches minimized instead of stealing the desktop', () 
   assert.equal(args.at(-1), 'https://chatgpt.com');
 });
 
+test('background Chrome can start without an initial visible URL on macOS', () => {
+  const args = chromeLaunchArgs({
+    port: 12345,
+    profileDir: '/tmp/gpt-pro-profile',
+    mode: 'background',
+    baseUrl: 'https://chatgpt.com',
+    noStartupWindow: true,
+  });
+  assert.ok(args.includes('--no-startup-window'));
+  assert.ok(args.includes('--start-minimized'));
+  assert.ok(!args.includes('https://chatgpt.com'));
+});
+
 test('headless Chrome uses CDP-compatible new headless mode with the same profile', () => {
   const args = chromeLaunchArgs({
     port: 12345,

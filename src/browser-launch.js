@@ -1,4 +1,10 @@
-export function chromeLaunchArgs({ port, profileDir, mode = 'background', baseUrl }) {
+export function chromeLaunchArgs({
+  port,
+  profileDir,
+  mode = 'background',
+  baseUrl,
+  noStartupWindow = false,
+}) {
   const args = [
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${profileDir}`,
@@ -22,10 +28,13 @@ export function chromeLaunchArgs({ port, profileDir, mode = 'background', baseUr
       '--disable-backgrounding-occluded-windows',
       '--disable-renderer-backgrounding',
     );
+    if (noStartupWindow) {
+      args.push('--no-startup-window');
+    }
   } else {
     args.push('--window-size=1440,1000');
   }
 
-  if (baseUrl) args.push(baseUrl);
+  if (baseUrl && !(mode === 'background' && noStartupWindow)) args.push(baseUrl);
   return args;
 }

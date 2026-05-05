@@ -28,9 +28,12 @@ export function paths() {
 }
 
 export function settings() {
+  const macosNoStartupWindow = process.env.GPT_PRO_MACOS_NO_STARTUP_WINDOW !== '0';
   return {
     baseUrl: process.env.GPT_PRO_CHATGPT_URL || 'https://chatgpt.com',
     browserMode: process.env.GPT_PRO_BROWSER_MODE || DEFAULT_BROWSER_MODE,
+    macosNoStartupWindow,
+    strictBackground: process.env.GPT_PRO_STRICT_BACKGROUND === '1',
     projectName: process.env.GPT_PRO_PROJECT || DEFAULT_PROJECT_NAME,
     idleMs: Number.parseInt(process.env.GPT_PRO_IDLE_MS || `${DEFAULT_IDLE_MS}`, 10),
     operationTimeoutMs: Number.parseInt(process.env.GPT_PRO_OPERATION_TIMEOUT_MS || `${12 * 60 * 1000}`, 10),
