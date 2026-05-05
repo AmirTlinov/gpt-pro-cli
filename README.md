@@ -10,13 +10,13 @@ answer plus files on disk. It is a browser bridge, not an OpenAI API client.
 ## Install
 
 ```sh
-npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.18/gpt-pro-cli-0.1.18.tgz
+npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.19/gpt-pro-cli-0.1.19.tgz
 ```
 
 Or install the same release from the Git tag:
 
 ```sh
-npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.18
+npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.19
 ```
 
 For local development:
@@ -95,9 +95,9 @@ answer; repos that were checked before the run are left checked.
 
 A clean receipt requires deterministic repo-picker confirmation. A GitHub
 tool-only pill or unmeasurable picker state is not accepted as clean repo
-grounding: the CLI still sends the connector-required prompt, but the receipt is
-`warn` and direct `gpt-pro ask` exits `10`. Treat that as usable-but-unproven,
-not as silent success.
+grounding. The CLI retries the picker flow and cleans any GitHub tool state it
+created itself; if it still cannot prove the requested repo is checked, it fails
+before submitting the prompt instead of asking GPT with ungrounded repo context.
 
 ## Files
 

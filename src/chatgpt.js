@@ -48,7 +48,8 @@ const GITHUB_REPO_SEARCH_SELECTORS = [
 ];
 
 const GITHUB_CONNECTOR_LABELS = ['GitHub'];
-const MORE_TOOLS_LABELS = ['More', 'Больше'];
+const MORE_TOOLS_LABELS = ['More', 'Больше', 'Ещё', 'Еще'];
+const GITHUB_CONNECTOR_OPEN_ATTEMPTS = 2;
 
 const STOP_SELECTORS = [
   '[data-testid="stop-button"]',
@@ -355,7 +356,7 @@ async function removeGitHubConnectorTool(page) {
   });
 }
 
-async function openGitHubConnector(page) {
+async function openGitHubConnector(page, { timeoutMs = 5_000 } = {}) {
   if (await hasFirstVisible(page, GITHUB_REPO_SEARCH_SELECTORS, 300)) return true;
 
   const openPickerFromActivePill = async () => {
@@ -384,7 +385,7 @@ async function openGitHubConnector(page) {
   };
 
   const ensurePicker = async () => {
-    const deadline = Date.now() + 5_000;
+    const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (await hasFirstVisible(page, GITHUB_REPO_SEARCH_SELECTORS, 700)) return true;
       if (await openPickerFromActivePill()) {
@@ -427,6 +428,71 @@ async function openGitHubConnector(page) {
   }
 
   return ensurePicker();
+}
+
+async function resetComposerForGitHubRetry(page) {
+  if (!await hasFirstVisible(page, GITHUB_REPO_SEARCH_SELECTORS, 150)) {
+    await page.keyboard.press('Escape').catch(() => {});
+  }
+  await page.waitForTimeout(250);
+  const composer = await waitForComposer(page, 1000).catch(() => null);
+  if (composer) {
+    await composer.evaluate((element) => {
+      element.scrollIntoView({ block: 'center', inline: 'nearest' });
+      element.focus();
+    }).catch(() => {});
+  }
+}
+
+async function openGitHubConnectorWithRecovery(page, {
+  toolPreexisting = false,
+  toolSelected = false,
+  attempts = GITHUB_CONNECTOR_OPEN_ATTEMPTS,
+} = {}) {
+  let active = toolSelected;
+  let resetOwnedTool = false;
+  let lastError = '';
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    await resetComposerForGitHubRetry(page);
+    const opened = await openGitHubConnector(page, {
+      timeoutMs: attempt === 1 ? 5_000 : 7_000,
+    }).catch((error) => {
+      lastError = error.message;
+      return false;
+    });
+    active = await isGitHubConnectorActive(page).catch(() => active);
+    if (opened && await hasFirstVisible(page, GITHUB_REPO_SEARCH_SELECTORS, 1500)) {
+      return {
+        opened: true,
+        toolSelected: active,
+        resetOwnedTool,
+        attempts: attempt,
+      };
+    }
+
+    // If this run only managed to create a tool-only GitHub pill, do not accept
+    // that as progress. Remove our own dirty state and retry the real picker.
+    // Never remove a preexisting GitHub pill: it may carry the user's selected
+    // repos, and the picker must be opened without disturbing that state.
+    if (!toolPreexisting && active) {
+      if (await removeGitHubConnectorTool(page).catch(() => false)) {
+        resetOwnedTool = true;
+        await page.waitForTimeout(500);
+        active = await isGitHubConnectorActive(page).catch(() => false);
+      }
+    }
+    await closeGitHubConnectorPicker(page);
+    await page.waitForTimeout(500);
+  }
+
+  return {
+    opened: false,
+    toolSelected: active,
+    resetOwnedTool,
+    attempts,
+    error: lastError,
+  };
 }
 
 async function githubRepositoryRowOperation(page, repository, operation = 'state') {
@@ -702,6 +768,8 @@ export async function attachGitHubRepositories(page, repositories = []) {
   const repositoryStates = [];
   const toolPreexisting = await isGitHubConnectorActive(page).catch(() => false);
   let toolSelected = toolPreexisting;
+  let recoveryResetOwnedTool = false;
+  let pickerOpenAttempts = 0;
 
   const connectorState = () => ({
     requested,
@@ -709,16 +777,20 @@ export async function attachGitHubRepositories(page, repositories = []) {
     toolSelected,
     toolPreexisting,
     toolActivatedByRun: !toolPreexisting && toolSelected,
+    recovery: {
+      resetOwnedTool: recoveryResetOwnedTool,
+      pickerOpenAttempts,
+    },
     repositorySelection: selected.length === requested.length ? 'repo-picker' : 'partial',
     repositories: repositoryStates,
     cleanupRequired: repositoryStates
       .filter((item) => item.state === 'temporary-selected')
       .map((item) => item.repository),
     cleanup: {
-      attempted: false,
-      status: repositoryStates.some((item) => item.state === 'temporary-selected') ? 'pending' : 'not-needed',
+      attempted: recoveryResetOwnedTool,
+      status: repositoryStates.some((item) => item.state === 'temporary-selected') ? 'pending' : (recoveryResetOwnedTool ? 'ok' : 'not-needed'),
       cleaned: [],
-      removedTool: false,
+      removedTool: recoveryResetOwnedTool,
       skipped: repositoryStates
         .filter((item) => item.state === 'preexisting')
         .map((item) => ({ repository: item.repository, reason: 'preexisting' })),
@@ -728,15 +800,18 @@ export async function attachGitHubRepositories(page, repositories = []) {
 
   try {
     for (const repository of requested) {
-      const opened = await openGitHubConnector(page);
-      toolSelected = await isGitHubConnectorActive(page).catch(() => false) || toolSelected;
-      if (!opened) {
-        throw new Error('ChatGPT GitHub connector control was not found. Configure/connect GitHub in ChatGPT, then retry.');
+      const opened = await openGitHubConnectorWithRecovery(page, { toolPreexisting, toolSelected });
+      pickerOpenAttempts += opened.attempts || 0;
+      recoveryResetOwnedTool = recoveryResetOwnedTool || Boolean(opened.resetOwnedTool);
+      toolSelected = Boolean(opened.toolSelected);
+      if (!opened.opened) {
+        const detail = opened.error ? ` Last error: ${opened.error}` : '';
+        throw new Error(`ChatGPT GitHub connector repository picker was not opened after ${opened.attempts} automated attempts.${detail} Configure/connect GitHub in ChatGPT, then retry.`);
       }
       if (!await hasFirstVisible(page, GITHUB_REPO_SEARCH_SELECTORS, 1500)) {
         await closeGitHubConnectorPicker(page);
         toolSelected = await isGitHubConnectorActive(page).catch(() => false) || toolSelected;
-        throw new Error('ChatGPT GitHub connector repository picker was not found. Tool-only GitHub selection is not enough for deterministic repo grounding.');
+        throw new Error('ChatGPT GitHub connector repository picker was not found after recovery. Tool-only GitHub selection is not enough for deterministic repo grounding.');
       }
       const result = await selectGitHubRepository(page, repository);
       if (!result?.selected) {
@@ -802,16 +877,17 @@ export async function cleanupGitHubRepositorySelections(page, githubConnector = 
     .some((item) => item.state === 'preexisting');
   const toolRemovalRequired = githubConnector.toolActivatedByRun && !hasPreexistingRepository;
   const cleanupNeeded = cleanupRequired.length > 0 || toolRemovalRequired;
+  const previousCleanup = githubConnector.cleanup || {};
 
   const next = {
     ...githubConnector,
     cleanup: {
-      attempted: cleanupNeeded,
-      status: cleanupNeeded ? 'ok' : 'not-needed',
+      attempted: cleanupNeeded || Boolean(previousCleanup.attempted),
+      status: cleanupNeeded ? 'ok' : (previousCleanup.status || 'not-needed'),
       cleaned: [],
-      removedTool: false,
+      removedTool: Boolean(previousCleanup.removedTool),
       skipped: (githubConnector.cleanup?.skipped || []).slice(),
-      errors: [],
+      errors: (previousCleanup.errors || []).slice(),
     },
   };
 
@@ -1315,27 +1391,54 @@ export async function submitPrompt(page, { prompt, attachmentPath, githubReposit
         errors: [],
       },
     };
+    if ((githubRepositories || []).length > 0) {
+      const fail = new Error(`GitHub connector repository selection failed before prompt submission: ${error.message}`);
+      fail.githubConnector = githubConnector;
+      fail.cause = error;
+      throw fail;
+    }
   }
-  composer = await waitForComposer(page);
-  await setComposerText(page, composer, prompt);
-  await page.waitForTimeout(500);
-  if (attachmentPath) {
-    await attachFile(page, attachmentPath);
-    await page.waitForTimeout(1000);
-  }
-  await clickSend(page);
-  if (!await waitForPromptAccepted(page, composer, prompt, 5000)) {
-    await composer.evaluate((element) => {
-      element.scrollIntoView({ block: 'center', inline: 'nearest' });
-      element.focus();
-    }).catch(() => {});
-    await page.keyboard.press('Enter');
+
+  try {
+    composer = await waitForComposer(page);
+    await setComposerText(page, composer, prompt);
+    await page.waitForTimeout(500);
+    if (attachmentPath) {
+      await attachFile(page, attachmentPath);
+      await page.waitForTimeout(1000);
+    }
+    await clickSend(page);
     if (!await waitForPromptAccepted(page, composer, prompt, 5000)) {
-      await clickSend(page);
+      await composer.evaluate((element) => {
+        element.scrollIntoView({ block: 'center', inline: 'nearest' });
+        element.focus();
+      }).catch(() => {});
+      await page.keyboard.press('Enter');
       if (!await waitForPromptAccepted(page, composer, prompt, 5000)) {
-        throw new Error('Prompt was not submitted to ChatGPT');
+        await clickSend(page);
+        if (!await waitForPromptAccepted(page, composer, prompt, 5000)) {
+          throw new Error('Prompt was not submitted to ChatGPT');
+        }
       }
     }
+  } catch (error) {
+    if ((githubConnector.cleanupRequired || []).length > 0 || githubConnector.toolActivatedByRun) {
+      error.githubConnector = await cleanupGitHubRepositorySelections(page, githubConnector).catch((cleanupError) => ({
+        ...githubConnector,
+        cleanup: {
+          attempted: true,
+          status: 'warn',
+          cleaned: [],
+          removedTool: githubConnector.cleanup?.removedTool || false,
+          skipped: githubConnector.cleanup?.skipped || [],
+          errors: [
+            ...(githubConnector.cleanup?.errors || []),
+            { error: cleanupError.message },
+          ],
+        },
+      }));
+    }
+    throw error;
   }
   return { githubConnector };
 }

@@ -79,6 +79,19 @@ function fakeProjectServer({ hasProject = false } = {}) {
   });
 }
 
+async function captureSubmitPromptFailure(page, options) {
+  let caught = null;
+  try {
+    await submitPrompt(page, options);
+  } catch (error) {
+    caught = error;
+  }
+  assert.ok(caught, 'submitPrompt should fail before submitting an ungrounded GitHub prompt');
+  assert.match(caught.message, /GitHub connector repository selection failed before prompt submission/);
+  assert.ok(caught.githubConnector);
+  return caught;
+}
+
 test('fake ChatGPT page accepts prompt and exposes answer artifacts', async (t) => {
   let browser;
   try {
@@ -855,6 +868,70 @@ test('GitHub connector waits for delayed GitHub pill before opening repo picker'
   }
 });
 
+test('GitHub connector recovers from an owned tool-only activation and retries picker opening', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const page = await browser.newPage();
+  try {
+    await page.setContent(`
+      <main>
+        <button id="tools" data-testid="composer-plus-btn" aria-label="Добавляйте файлы и многое другое">+</button>
+        <div id="tool-menu" role="menu" style="display:none">
+          <div role="menuitemradio" id="github-menu-item">GitHub</div>
+        </div>
+        <div data-testid="composer-footer-actions"></div>
+        <div id="github-menu" role="menu" style="display:none">
+          <input id="repo-search" placeholder="Поиск в репозиториях…" />
+          <div role="menuitemcheckbox" aria-checked="false" id="repo" style="display:none">AmirTlinov/gpt-pro-cli</div>
+        </div>
+        <div id="prompt-textarea" contenteditable="true" role="textbox"></div>
+        <script>
+          window.githubActivations = 0;
+          window.removals = 0;
+          document.querySelector('#tools').addEventListener('click', () => {
+            document.querySelector('#tool-menu').style.display = 'block';
+          });
+          document.querySelector('#github-menu-item').addEventListener('click', () => {
+            window.githubActivations += 1;
+            document.querySelector('[data-testid="composer-footer-actions"]').innerHTML =
+              '<button id="remove-github" aria-label="GitHub, нажмите, чтобы удалить"></button><button id="github-pill" class="__composer-pill">GitHub</button>';
+            if (window.githubActivations > 1) {
+              document.querySelector('#github-menu').style.display = 'block';
+            }
+          });
+          document.addEventListener('click', (event) => {
+            if (event.target.id === 'remove-github') {
+              window.removals += 1;
+              document.querySelector('[data-testid="composer-footer-actions"]').innerHTML = '';
+              document.querySelector('#github-menu').style.display = 'none';
+            }
+          });
+          document.querySelector('#repo-search').addEventListener('input', (event) => {
+            document.querySelector('#repo').style.display = event.target.value === 'AmirTlinov/gpt-pro-cli' ? 'block' : 'none';
+          });
+          document.querySelector('#repo').addEventListener('click', () => {
+            document.querySelector('#repo').setAttribute('aria-checked', 'true');
+          });
+        </script>
+      </main>
+    `);
+
+    const result = await attachGitHubRepositories(page, ['AmirTlinov/gpt-pro-cli']);
+    assert.deepEqual(result.selected, ['AmirTlinov/gpt-pro-cli']);
+    assert.equal(result.repositories[0].state, 'temporary-selected');
+    assert.equal(await page.evaluate(() => window.githubActivations), 2);
+    assert.equal(await page.evaluate(() => window.removals), 1);
+  } finally {
+    await browser.close();
+  }
+});
+
 test('GitHub connector selector rejects tool-only UI as unconfirmed repo grounding', async (t) => {
   let browser;
   try {
@@ -893,14 +970,14 @@ test('GitHub connector selector rejects tool-only UI as unconfirmed repo groundi
 
     await assert.rejects(
       () => attachGitHubRepositories(page, ['AmirTlinov/gpt-pro-cli']),
-      /was not found|control was not found|checked state could not be determined/,
+      /was not found|control was not found|checked state could not be determined|repository picker was not opened/,
     );
   } finally {
     await browser.close();
   }
 });
 
-test('submitPrompt keeps going with prompt-required warning when GitHub UI selection is unavailable', async (t) => {
+test('submitPrompt fails before prompt submission when GitHub UI selection is unavailable', async (t) => {
   let browser;
   try {
     browser = await chromium.launch({ headless: true });
@@ -927,13 +1004,13 @@ test('submitPrompt keeps going with prompt-required warning when GitHub UI selec
       </main>
     `);
 
-    const result = await submitPrompt(page, {
+    const error = await captureSubmitPromptFailure(page, {
       prompt: 'Use GitHub connector.\nQuestion: hello',
       githubRepositories: ['AmirTlinov/gpt-pro-cli'],
     });
-    assert.equal(result.githubConnector.uiSelection, 'unavailable');
-    assert.deepEqual(result.githubConnector.requested, ['AmirTlinov/gpt-pro-cli']);
-    assert.equal(await waitForUserPromptVisible(page, 'Use GitHub connector. Question: hello', 1000), true);
+    assert.equal(error.githubConnector.uiSelection, 'unavailable');
+    assert.deepEqual(error.githubConnector.requested, ['AmirTlinov/gpt-pro-cli']);
+    assert.equal(await waitForUserPromptVisible(page, 'Use GitHub connector. Question: hello', 1000), false);
   } finally {
     await browser.close();
   }
@@ -991,18 +1068,18 @@ test('submitPrompt removes GitHub tool activated by a failed repo selection', as
       </main>
     `);
 
-    const result = await submitPrompt(page, {
+    const error = await captureSubmitPromptFailure(page, {
       prompt: 'failed repo cleanup',
       githubRepositories: ['AmirTlinov/gpt-pro-cli'],
     });
 
-    assert.equal(result.githubConnector.uiSelection, 'unavailable');
-    assert.deepEqual(result.githubConnector.selected, []);
-    assert.equal(result.githubConnector.cleanup.attempted, true);
-    assert.equal(result.githubConnector.cleanup.status, 'ok');
-    assert.equal(result.githubConnector.cleanup.removedTool, true);
+    assert.equal(error.githubConnector.uiSelection, 'unavailable');
+    assert.deepEqual(error.githubConnector.selected, []);
+    assert.equal(error.githubConnector.cleanup.attempted, true);
+    assert.equal(error.githubConnector.cleanup.status, 'ok');
+    assert.equal(error.githubConnector.cleanup.removedTool, true);
     assert.equal(await page.locator('#github-pill').count(), 0);
-    assert.equal(await waitForUserPromptVisible(page, 'failed repo cleanup', 1000), true);
+    assert.equal(await waitForUserPromptVisible(page, 'failed repo cleanup', 1000), false);
   } finally {
     await browser.close();
   }
@@ -1052,18 +1129,19 @@ test('submitPrompt removes GitHub tool activated without a repository picker', a
       </main>
     `);
 
-    const result = await submitPrompt(page, {
+    const error = await captureSubmitPromptFailure(page, {
       prompt: 'tool-only cleanup',
       githubRepositories: ['AmirTlinov/gpt-pro-cli'],
     });
 
-    assert.equal(result.githubConnector.uiSelection, 'unavailable');
-    assert.equal(result.githubConnector.toolActivatedByRun, true);
-    assert.equal(result.githubConnector.cleanup.attempted, true);
-    assert.equal(result.githubConnector.cleanup.status, 'ok');
-    assert.equal(result.githubConnector.cleanup.removedTool, true);
+    assert.equal(error.githubConnector.uiSelection, 'unavailable');
+    assert.equal(error.githubConnector.toolActivatedByRun, false);
+    assert.equal(error.githubConnector.recovery.resetOwnedTool, true);
+    assert.equal(error.githubConnector.cleanup.attempted, true);
+    assert.equal(error.githubConnector.cleanup.status, 'ok');
+    assert.equal(error.githubConnector.cleanup.removedTool, true);
     assert.equal(await page.locator('#github-pill').count(), 0);
-    assert.equal(await waitForUserPromptVisible(page, 'tool-only cleanup', 1000), true);
+    assert.equal(await waitForUserPromptVisible(page, 'tool-only cleanup', 1000), false);
   } finally {
     await browser.close();
   }
@@ -1119,18 +1197,18 @@ test('submitPrompt cleans partial GitHub repo selection when a later repo fails'
       </main>
     `);
 
-    const result = await submitPrompt(page, {
+    const error = await captureSubmitPromptFailure(page, {
       prompt: 'partial repo cleanup',
       githubRepositories: ['AmirTlinov/gpt-pro-cli', 'AmirTlinov/missing-repo'],
     });
-    assert.equal(result.githubConnector.uiSelection, 'partial');
-    assert.deepEqual(result.githubConnector.selected, []);
-    assert.deepEqual(result.githubConnector.selectedBeforeCleanup, ['AmirTlinov/gpt-pro-cli']);
-    assert.equal(result.githubConnector.repositories[0].state, 'cleaned-before-submit');
-    assert.match(result.githubConnector.error, /checked state could not be determined/);
-    assert.deepEqual(result.githubConnector.cleanup.cleaned, [{ repository: 'AmirTlinov/gpt-pro-cli', state: 'unselected' }]);
+    assert.equal(error.githubConnector.uiSelection, 'partial');
+    assert.deepEqual(error.githubConnector.selected, []);
+    assert.deepEqual(error.githubConnector.selectedBeforeCleanup, ['AmirTlinov/gpt-pro-cli']);
+    assert.equal(error.githubConnector.repositories[0].state, 'cleaned-before-submit');
+    assert.match(error.githubConnector.error, /checked state could not be determined/);
+    assert.deepEqual(error.githubConnector.cleanup.cleaned, [{ repository: 'AmirTlinov/gpt-pro-cli', state: 'unselected' }]);
     assert.equal(await page.locator('#repo-good').getAttribute('aria-checked'), 'false');
-    assert.equal(await waitForUserPromptVisible(page, 'partial repo cleanup', 1000), true);
+    assert.equal(await waitForUserPromptVisible(page, 'partial repo cleanup', 1000), false);
   } finally {
     await browser.close();
   }
@@ -1193,19 +1271,89 @@ test('submitPrompt does not claim cleaned-before-submit when partial cleanup fai
       </main>
     `);
 
-    const result = await submitPrompt(page, {
+    const error = await captureSubmitPromptFailure(page, {
       prompt: 'partial cleanup failure',
       githubRepositories: ['AmirTlinov/gpt-pro-cli', 'AmirTlinov/missing-repo'],
     });
 
-    assert.equal(result.githubConnector.uiSelection, 'partial');
-    assert.deepEqual(result.githubConnector.selected, []);
-    assert.deepEqual(result.githubConnector.selectedBeforeCleanup, ['AmirTlinov/gpt-pro-cli']);
-    assert.equal(result.githubConnector.repositories[0].state, 'cleanup-failed-before-submit');
-    assert.equal(result.githubConnector.cleanup.status, 'warn');
-    assert.match(result.githubConnector.cleanup.errors[0].error, /not found during cleanup/);
+    assert.equal(error.githubConnector.uiSelection, 'partial');
+    assert.deepEqual(error.githubConnector.selected, []);
+    assert.deepEqual(error.githubConnector.selectedBeforeCleanup, ['AmirTlinov/gpt-pro-cli']);
+    assert.equal(error.githubConnector.repositories[0].state, 'cleanup-failed-before-submit');
+    assert.equal(error.githubConnector.cleanup.status, 'warn');
+    assert.match(error.githubConnector.cleanup.errors[0].error, /not found during cleanup/);
     assert.equal(await page.locator('#repo-good').getAttribute('aria-checked'), 'true');
-    assert.equal(await waitForUserPromptVisible(page, 'partial cleanup failure', 1000), true);
+    assert.equal(await waitForUserPromptVisible(page, 'partial cleanup failure', 1000), false);
+  } finally {
+    await browser.close();
+  }
+});
+
+test('submitPrompt cleans temporary GitHub selection if prompt submission fails after selection', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const page = await browser.newPage();
+  try {
+    await page.setContent(`
+      <main>
+        <button id="tools" aria-label="Add tools">+</button>
+        <div id="tool-menu" style="display:none">
+          <button id="github">GitHub</button>
+        </div>
+        <div data-testid="composer-footer-actions"></div>
+        <div id="github-menu" role="menu" style="display:none">
+          <input id="repo-search" placeholder="Поиск в репозиториях…" />
+          <button id="repo" role="menuitemcheckbox" aria-checked="false" style="display:none">AmirTlinov/gpt-pro-cli</button>
+        </div>
+        <div id="prompt-textarea" contenteditable="true" role="textbox"></div>
+        <script>
+          document.querySelector('#tools').addEventListener('click', () => {
+            document.querySelector('#tool-menu').style.display = 'block';
+          });
+          document.querySelector('#github').addEventListener('click', () => {
+            document.querySelector('[data-testid="composer-footer-actions"]').innerHTML =
+              '<button id="remove-github" aria-label="GitHub, нажмите, чтобы удалить"></button><button id="github-pill" class="__composer-pill">GitHub</button>';
+            document.querySelector('#github-menu').style.display = 'block';
+          });
+          document.addEventListener('click', (event) => {
+            if (event.target.id === 'remove-github') {
+              document.querySelector('[data-testid="composer-footer-actions"]').innerHTML = '';
+            }
+          });
+          document.querySelector('#repo-search').addEventListener('input', (event) => {
+            document.querySelector('#repo').style.display = event.target.value === 'AmirTlinov/gpt-pro-cli' ? 'block' : 'none';
+          });
+          document.querySelector('#repo').addEventListener('click', () => {
+            const repo = document.querySelector('#repo');
+            repo.setAttribute('aria-checked', repo.getAttribute('aria-checked') === 'true' ? 'false' : 'true');
+          });
+        </script>
+      </main>
+    `);
+
+    let error = null;
+    try {
+      await submitPrompt(page, {
+        prompt: 'send should fail after repo selection',
+        githubRepositories: ['AmirTlinov/gpt-pro-cli'],
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    assert.ok(error);
+    assert.match(error.message, /Send button not found|Prompt was not submitted/);
+    assert.equal(error.githubConnector.cleanup.status, 'ok');
+    assert.deepEqual(error.githubConnector.cleanup.cleaned, [{ repository: 'AmirTlinov/gpt-pro-cli', state: 'unselected' }]);
+    assert.equal(error.githubConnector.cleanup.removedTool, true);
+    assert.equal(await page.locator('#repo').getAttribute('aria-checked'), 'false');
+    assert.equal(await page.locator('#github-pill').count(), 0);
   } finally {
     await browser.close();
   }
