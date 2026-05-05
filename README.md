@@ -161,19 +161,20 @@ membership.
 local storage root.
 
 The default browser mode is `headless`: agent asks use the persistent
-`~/gpt-pro/browser-profile` through Chrome's CDP path without creating a macOS GUI
-window. On macOS the focus guard is also active for headless Chrome because the
-Chrome app process can still briefly claim focus even without a visible page. This
-is the only default mode that can honestly minimize focus theft and Spaces
-switching during normal agent work. Use `gpt-pro login` for the one intentional
-visible-login/recovery flow.
+`~/gpt-pro/browser-profile` through Chrome's CDP path without opening an initial
+Chrome URL at process launch. On macOS, headless runs keep the focus guard active
+while the browser task is running; this hides Chrome if macOS tries to bring the
+app forward and does not activate Ghostty/Finder as a stale "restore" target.
+`GPT_PRO_HEADLESS_FLAVOR` defaults to Chrome's supported `new` headless mode.
+Use `gpt-pro login` for the one intentional visible-login or human-challenge
+recovery flow.
 
 `GPT_PRO_BROWSER_MODE=background` remains available as a GUI fallback for cases
 where ChatGPT blocks true headless mode with a protection/loading screen. On
 macOS that fallback starts the Chrome executable directly with
 `--no-startup-window`, avoids the `open -a Google Chrome` LaunchServices path, and
-parks the window off-screen/minimized after CDP connects. A small focus guard
-hides automation Chrome if macOS briefly brings it forward; it does not activate
+parks the window off-screen/minimized after CDP connects. A small focus guard can
+hide Chrome if macOS briefly brings it forward; it does not activate
 Ghostty/Finder or any stale desktop. This fallback is best-effort: macOS can still
 move Spaces for GUI apps, so it is not the default for agent asks. `gpt-pro status`
 reports the parking state as `background-window: ...`. Set

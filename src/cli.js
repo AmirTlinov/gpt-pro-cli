@@ -380,6 +380,7 @@ async function doctor() {
     `chatgpt: ${settings().baseUrl}`,
     `project: ${settings().projectName}`,
     `browser-mode: ${settings().browserMode}`,
+    `headless-flavor: ${settings().headlessFlavor}`,
     `background-window: no-startup-window=${settings().macosNoStartupWindow ? 'on' : 'off'} focus-guard=${settings().macosFocusGuard ? 'on' : 'off'} strict=${settings().strictBackground ? 'on' : 'off'}`,
     `version: ${PACKAGE_VERSION}`,
     `chrome: ${chromeFound ? chromeApp : 'not found at /Applications/Google Chrome.app'}`,

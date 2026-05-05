@@ -4,7 +4,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { spawn, execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
-import { DEFAULT_BROWSER_MODE, PACKAGE_VERSION, paths } from './config.js';
+import { DEFAULT_BROWSER_MODE, PACKAGE_VERSION, paths, settings } from './config.js';
 import { ensureDir, pathExists, readJson } from './fsx.js';
 
 const START_TIMEOUT_MS = 45_000;
@@ -276,9 +276,12 @@ async function ensureKeeperUnlocked({ mode } = {}) {
   await ensureDir(paths().runtimeDir);
   await cleanupStaleRuntime();
   const desiredMode = mode || DEFAULT_BROWSER_MODE;
+  const desiredHeadlessFlavor = settings().headlessFlavor;
   const current = await readRuntime();
   const currentHealth = await health(current);
-  const currentCompatible = current?.mode === desiredMode && current?.version === PACKAGE_VERSION;
+  const currentCompatible = current?.mode === desiredMode
+    && current?.version === PACKAGE_VERSION
+    && (desiredMode !== 'headless' || current?.headlessFlavor === desiredHeadlessFlavor);
   if (currentHealth && currentCompatible) return current;
   if (currentHealth && !currentCompatible) {
     await stopKeeper({ lock: false });
@@ -313,11 +316,15 @@ export async function runtimeStatus() {
   const runtime = await readRuntime();
   const alive = runtime ? pidAlive(runtime.pid) : false;
   const healthy = alive ? await health(runtime) : null;
+  const currentSettings = settings();
+  const desiredMode = currentSettings.browserMode || DEFAULT_BROWSER_MODE;
   return {
     runtime,
     alive,
     healthy,
-    compatible: Boolean(runtime?.version === PACKAGE_VERSION),
+    compatible: Boolean(runtime?.version === PACKAGE_VERSION
+      && runtime?.mode === desiredMode
+      && (desiredMode !== 'headless' || runtime?.headlessFlavor === currentSettings.headlessFlavor)),
     runtimeFileExists: await pathExists(paths().runtimeFile),
   };
 }

@@ -8,6 +8,13 @@ export const PACKAGE_VERSION = packageJson.version;
 export const DEFAULT_IDLE_MS = 20 * 60 * 1000;
 export const DEFAULT_PROJECT_NAME = 'CLI_QUESTIONS';
 export const DEFAULT_BROWSER_MODE = 'headless';
+export const DEFAULT_HEADLESS_FLAVOR = 'new';
+
+export function normalizeHeadlessFlavor(value = DEFAULT_HEADLESS_FLAVOR) {
+  const normalized = String(value || DEFAULT_HEADLESS_FLAVOR).trim().toLowerCase();
+  if (normalized === 'old' || normalized === 'new') return normalized;
+  throw new Error(`GPT_PRO_HEADLESS_FLAVOR must be "old" or "new", got "${value}"`);
+}
 
 export function homeDir() {
   return process.env.GPT_PRO_HOME || path.join(os.homedir(), 'gpt-pro');
@@ -32,6 +39,7 @@ export function settings() {
   return {
     baseUrl: process.env.GPT_PRO_CHATGPT_URL || 'https://chatgpt.com',
     browserMode: process.env.GPT_PRO_BROWSER_MODE || DEFAULT_BROWSER_MODE,
+    headlessFlavor: normalizeHeadlessFlavor(process.env.GPT_PRO_HEADLESS_FLAVOR || DEFAULT_HEADLESS_FLAVOR),
     macosNoStartupWindow,
     macosFocusGuard: process.env.GPT_PRO_MACOS_FOCUS_GUARD !== '0',
     strictBackground: process.env.GPT_PRO_STRICT_BACKGROUND === '1',

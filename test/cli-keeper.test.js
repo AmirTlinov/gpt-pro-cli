@@ -46,12 +46,14 @@ test('doctor defaults agent traffic to headless browser mode', async () => {
     timeout: 10_000,
   });
   assert.match(stdout, /^browser-mode: headless$/m);
+  assert.match(stdout, /^headless-flavor: new$/m);
 });
 
 test('macOS focus guard hides the automated Chrome instead of activating a stale desktop', async () => {
   const source = await fs.readFile(path.resolve('src/keeper.js'), 'utf8');
   assert.match(source, /application processes whose name is "Google Chrome" or name is "Chromium"/);
   assert.match(source, /set visible of chromeProc to false/);
+  assert.match(source, /\['background', 'headless'\]\.includes\(mode\)/);
   assert.doesNotMatch(source, /set frontmost of first application process/);
   assert.doesNotMatch(source, /tell application previousApp to activate/);
   assert.doesNotMatch(source, /restorePreviousAppIfChromeIsFrontmost/);

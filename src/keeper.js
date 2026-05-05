@@ -382,6 +382,7 @@ async function launchChromeWithCdp() {
       mode,
       baseUrl: appSettings.baseUrl,
       noStartupWindow: shouldUseNoStartupWindow(),
+      headlessFlavor: appSettings.headlessFlavor,
     });
     const launched = launchChromeProcess(chromePath, args, port);
     chromeProcess = launched.trackActualPid ? null : launched.process;
@@ -558,7 +559,9 @@ async function browserPage() {
     await parkBackgroundWindow(activePage);
     return activePage;
   }
-  activePage = context.pages()[0] || await createBrowserPage();
+  activePage = mode === 'headless'
+    ? await createBrowserPage()
+    : context.pages()[0] || await createBrowserPage();
   await activePage.setViewportSize({ width: 1440, height: 1000 }).catch(() => {});
   await parkBackgroundWindow(activePage);
   return activePage;
@@ -888,6 +891,7 @@ async function main() {
     token,
     mode,
     version: PACKAGE_VERSION,
+    headlessFlavor: appSettings.headlessFlavor,
     macosNoStartupWindow: shouldUseNoStartupWindow(),
     strictBackground: appSettings.strictBackground,
     startedAt: new Date().toISOString(),

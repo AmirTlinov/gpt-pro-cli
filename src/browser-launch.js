@@ -4,6 +4,7 @@ export function chromeLaunchArgs({
   mode = 'background',
   baseUrl,
   noStartupWindow = false,
+  headlessFlavor = 'new',
 }) {
   const args = [
     `--remote-debugging-port=${port}`,
@@ -14,8 +15,12 @@ export function chromeLaunchArgs({
   ];
 
   if (mode === 'headless') {
+    const normalizedHeadlessFlavor = String(headlessFlavor || 'new').trim().toLowerCase();
+    if (!['old', 'new'].includes(normalizedHeadlessFlavor)) {
+      throw new Error(`headlessFlavor must be "old" or "new", got "${headlessFlavor}"`);
+    }
     args.push(
-      '--headless=new',
+      `--headless=${normalizedHeadlessFlavor}`,
       '--window-size=1440,1000',
       '--hide-scrollbars',
       '--mute-audio',
@@ -35,6 +40,6 @@ export function chromeLaunchArgs({
     args.push('--window-size=1440,1000');
   }
 
-  if (baseUrl && !(mode === 'background' && noStartupWindow)) args.push(baseUrl);
+  if (baseUrl && mode !== 'headless' && !(mode === 'background' && noStartupWindow)) args.push(baseUrl);
   return args;
 }
