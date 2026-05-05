@@ -10,6 +10,7 @@ test('background Chrome launches minimized instead of stealing the desktop', () 
     baseUrl: 'https://chatgpt.com',
   });
   assert.ok(args.includes('--start-minimized'));
+  assert.ok(args.includes('--window-position=-24000,-24000'));
   assert.ok(args.includes('--disable-backgrounding-occluded-windows'));
   assert.ok(args.includes('--disable-renderer-backgrounding'));
   assert.ok(!args.some((arg) => arg.startsWith('--headless')));

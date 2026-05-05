@@ -1275,12 +1275,14 @@ export async function isLoggedIn(page) {
 }
 
 export async function authSnapshot(page) {
+  const title = await page.title().catch(() => '');
   if (/\/auth\/login/.test(page.url())) {
     return {
       loggedIn: false,
       hasComposer: false,
       hasUnauthAction: true,
       url: page.url(),
+      title,
       unauthActions: ['login-url'],
     };
   }
@@ -1291,6 +1293,7 @@ export async function authSnapshot(page) {
     hasComposer,
     hasUnauthAction: unauthActions.length > 0,
     url: page.url(),
+    title,
     unauthActions,
   };
 }
@@ -1346,10 +1349,22 @@ async function visibleUnauthActions(page) {
 export async function waitForLoggedIn(page, timeoutMs = 10 * 60_000, options = {}) {
   const deadline = Date.now() + timeoutMs;
   let lastSnapshot = null;
+  let interstitialSince = 0;
   while (Date.now() < deadline) {
     await assertNoChatGptBlocker(page);
     lastSnapshot = await authSnapshot(page);
     if (lastSnapshot.loggedIn) return true;
+    const loadingInterstitial = /^(one moment|just a moment|один момент)/i.test(lastSnapshot.title || '')
+      && !lastSnapshot.hasComposer
+      && !lastSnapshot.hasUnauthAction;
+    if (loadingInterstitial) {
+      interstitialSince ||= Date.now();
+      if (options.failFastUnauth && Date.now() - interstitialSince > 20_000) {
+        throw new Error(`ChatGPT is stuck on a loading/protection interstitial. True headless browser mode may be blocked; use the default background mode or run "gpt-pro login" for manual recovery. url=${lastSnapshot.url}; title=${lastSnapshot.title}; composer=${lastSnapshot.hasComposer}; auth actions=${lastSnapshot.unauthActions.join(', ') || 'none'}`);
+      }
+    } else {
+      interstitialSince = 0;
+    }
     if (options.failFastUnauth && lastSnapshot.hasUnauthAction) {
       throw new Error(`ChatGPT profile is not logged in. Run "gpt-pro login" first. url=${lastSnapshot.url}; visible auth actions=${lastSnapshot.unauthActions.join(', ')}`);
     }

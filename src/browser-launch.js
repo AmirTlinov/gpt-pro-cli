@@ -17,6 +17,7 @@ export function chromeLaunchArgs({ port, profileDir, mode = 'background', baseUr
   } else if (mode === 'background') {
     args.push(
       '--window-size=1440,1000',
+      '--window-position=-24000,-24000',
       '--start-minimized',
       '--disable-backgrounding-occluded-windows',
       '--disable-renderer-backgrounding',

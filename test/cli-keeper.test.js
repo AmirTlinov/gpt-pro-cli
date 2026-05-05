@@ -35,8 +35,8 @@ test('CLI status is quiet when keeper is stopped', async () => {
   assert.match(stdout, /^task: none$/m);
 });
 
-test('doctor defaults agent traffic to headless browser mode', async () => {
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-doctor-headless-'));
+test('doctor defaults agent traffic to background browser mode', async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-doctor-background-'));
   const { stdout } = await execFile(process.execPath, [cliPath, 'doctor'], {
     env: {
       ...process.env,
@@ -45,7 +45,7 @@ test('doctor defaults agent traffic to headless browser mode', async () => {
     },
     timeout: 10_000,
   });
-  assert.match(stdout, /^browser-mode: headless$/m);
+  assert.match(stdout, /^browser-mode: background$/m);
 });
 
 async function profileProcessLines(profileDir) {

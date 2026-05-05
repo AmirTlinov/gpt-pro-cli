@@ -10,13 +10,13 @@ answer plus files on disk. It is a browser bridge, not an OpenAI API client.
 ## Install
 
 ```sh
-npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.27/gpt-pro-cli-0.1.27.tgz
+npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.28/gpt-pro-cli-0.1.28.tgz
 ```
 
 Or install the same release from the Git tag:
 
 ```sh
-npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.27
+npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.28
 ```
 
 For local development:
@@ -160,20 +160,23 @@ membership.
 `GPT_PRO_PROJECT` changes the ChatGPT project name. `GPT_PRO_HOME` changes the
 local storage root.
 
-The default browser mode is `headless`: agent asks use the persistent
-`~/gpt-pro/browser-profile` through Chrome's CDP path without opening a visible
-Chrome window. This keeps normal agent work out of your desktop. If ChatGPT
-challenges the headless session, the CLI fails closed instead of silently
-falling back to a visible browser.
+The default browser mode is `background`: agent asks use the persistent
+`~/gpt-pro/browser-profile` through Chrome's CDP path in a minimized/off-screen
+Chrome window. This is intentionally not true headless by default: current
+ChatGPT sessions can keep true headless Chrome on a long "One moment" protection
+screen even when the same profile is logged in. The default optimizes for a
+reliable agent run that does not steal the desktop.
 
 `gpt-pro doctor` prints both the CLI version and keeper version. If a keeper from
 an older install is still alive, the next `ask`/`smoke` automatically restarts it
 instead of reusing a stale browser worker.
 
-`gpt-pro login` is the only command that intentionally opens visible Chrome, so
-you can complete auth or a human challenge. A visible agent browser is still
-available explicitly with `GPT_PRO_BROWSER_MODE=background` or
-`GPT_PRO_BROWSER_MODE=headed`, but it is no longer the default.
+`gpt-pro login` intentionally opens visible Chrome so you can complete auth or a
+human challenge. True headless mode remains available explicitly with
+`GPT_PRO_BROWSER_MODE=headless`; if ChatGPT keeps it on a protection/loading
+screen, the CLI fails closed instead of silently falling back to a visible
+browser. Fully visible agent traffic is available with
+`GPT_PRO_BROWSER_MODE=headed`.
 
 Downloader limits can be changed with `GPT_PRO_MAX_DOWNLOAD_BYTES` and
 `GPT_PRO_DOWNLOAD_TIMEOUT_MS`.

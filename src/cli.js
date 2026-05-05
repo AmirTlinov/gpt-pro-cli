@@ -390,7 +390,7 @@ function formatKeeperStatus(status) {
       : page.auth.hasUnauthAction
         ? 'needs-login'
         : 'unknown';
-    lines.push(`auth: ${authState} composer=${Boolean(page.auth.hasComposer)} actions=${(page.auth.unauthActions || []).join(', ') || 'none'}`);
+    lines.push(`auth: ${authState} composer=${Boolean(page.auth.hasComposer)} actions=${(page.auth.unauthActions || []).join(', ') || 'none'}${page.auth.title && authState !== 'logged-in' ? ` title=${compactLine(page.auth.title, 80)}` : ''}`);
   }
   if (typeof page?.generating === 'boolean') lines.push(`generating: ${page.generating}`);
   if (page?.reasoningPreview) lines.push(`thinking: ${compactLine(page.reasoningPreview, 300)}`);
