@@ -384,10 +384,14 @@ async function openGitHubConnector(page) {
   };
 
   const ensurePicker = async () => {
-    if (await hasFirstVisible(page, GITHUB_REPO_SEARCH_SELECTORS, 700)) return true;
-    if (await openPickerFromActivePill()) {
-      await page.waitForTimeout(700);
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
       if (await hasFirstVisible(page, GITHUB_REPO_SEARCH_SELECTORS, 700)) return true;
+      if (await openPickerFromActivePill()) {
+        await page.waitForTimeout(700);
+        if (await hasFirstVisible(page, GITHUB_REPO_SEARCH_SELECTORS, 700)) return true;
+      }
+      await page.waitForTimeout(250);
     }
     return false;
   };

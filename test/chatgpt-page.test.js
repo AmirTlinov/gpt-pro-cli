@@ -791,6 +791,70 @@ test('GitHub connector selector opens repository picker from active GitHub pill'
   }
 });
 
+test('GitHub connector waits for delayed GitHub pill before opening repo picker', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const page = await browser.newPage();
+  try {
+    await page.setContent(`
+      <main>
+        <button id="tools" data-testid="composer-plus-btn" aria-label="Добавляйте файлы и многое другое">+</button>
+        <div id="tool-menu" role="menu" style="display:none">
+          <div role="menuitem" id="more">Больше</div>
+        </div>
+        <div id="more-menu" role="menu" style="display:none">
+          <div role="menuitemradio" id="github-menu-item">GitHub</div>
+        </div>
+        <div data-testid="composer-footer-actions"></div>
+        <div id="github-menu" role="menu" style="display:none">
+          <input id="repo-search" placeholder="Поиск в репозиториях…" />
+          <div role="menuitem" id="repo" style="display:none">AmirTlinov/gpt-pro-cli</div>
+        </div>
+        <script>
+          document.querySelector('#tools').addEventListener('click', () => {
+            document.querySelector('#tool-menu').style.display = 'block';
+          });
+          document.querySelector('#more').addEventListener('click', () => {
+            document.querySelector('#more-menu').style.display = 'block';
+          });
+          document.querySelector('#github-menu-item').addEventListener('click', () => {
+            setTimeout(() => {
+              document.querySelector('[data-testid="composer-footer-actions"]').innerHTML =
+                '<button aria-label="GitHub, нажмите, чтобы удалить"></button><button id="github-pill" class="__composer-pill">GitHub</button>';
+            }, 1200);
+          });
+          document.addEventListener('click', (event) => {
+            if (event.target.id === 'github-pill') {
+              document.querySelector('#github-menu').style.display = 'block';
+            }
+          });
+          document.querySelector('#repo-search').addEventListener('input', (event) => {
+            if (event.target.value === 'AmirTlinov/gpt-pro-cli') {
+              document.querySelector('#repo').style.display = 'block';
+            }
+          });
+          document.querySelector('#repo').addEventListener('click', () => {
+            document.querySelector('#repo').innerHTML = 'AmirTlinov/gpt-pro-cli<div class="trailing"><svg></svg></div>';
+          });
+        </script>
+      </main>
+    `);
+
+    const result = await attachGitHubRepositories(page, ['AmirTlinov/gpt-pro-cli']);
+    assert.deepEqual(result.selected, ['AmirTlinov/gpt-pro-cli']);
+    assert.equal(result.repositories[0].state, 'temporary-selected');
+    assert.equal(await page.locator('#github-pill').count(), 1);
+  } finally {
+    await browser.close();
+  }
+});
+
 test('GitHub connector selector rejects tool-only UI as unconfirmed repo grounding', async (t) => {
   let browser;
   try {
