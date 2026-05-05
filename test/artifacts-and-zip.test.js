@@ -164,6 +164,40 @@ test('message receipt surfaces hidden download failures as warnings', async () =
   assert.match(receipt.warnings.join('\n'), /report\.zip/);
 });
 
+test('message receipt accepts prompt-scoped GitHub tool selection without fake repo-picker certainty', async () => {
+  const home = await tempHome();
+  process.env.GPT_PRO_HOME = home;
+  const messageDir = await nextMessageDir('github-prompt-scoped-session');
+
+  const result = await writeMessageArtifacts(messageDir, {
+    prompt: 'hello',
+    answer: 'world',
+    downloads: [],
+    meta: {
+      command: 'ask',
+      project: 'CLI_QUESTIONS',
+      sessionUrl: 'https://chatgpt.com/g/g-p-demo/c/github-prompt-scoped-session',
+      githubRepositories: ['AmirTlinov/gpt-pro-cli'],
+      githubConnector: {
+        requested: ['AmirTlinov/gpt-pro-cli'],
+        selected: [],
+        toolSelected: true,
+        repositorySelection: 'prompt-scoped',
+      },
+      downloads: [],
+      linkDownloads: [],
+      downloadErrors: [],
+      extractedFiles: [],
+    },
+  });
+
+  const receipt = JSON.parse(await fs.readFile(result.path, 'utf8'));
+  assert.equal(receipt.status, 'ok');
+  assert.equal(receipt.githubConnector.repositorySelection, 'prompt-scoped');
+  assert.deepEqual(receipt.githubConnector.selected, []);
+  assert.equal(receipt.warnings.length, 0);
+});
+
 test('archive includes project chats, project sessions, and manifest only', async () => {
   const home = await tempHome();
   process.env.GPT_PRO_HOME = home;

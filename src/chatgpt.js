@@ -47,6 +47,9 @@ const GITHUB_REPO_SEARCH_SELECTORS = [
   'input[type="search"]',
 ];
 
+const GITHUB_CONNECTOR_LABELS = ['GitHub'];
+const MORE_TOOLS_LABELS = ['More', 'Больше'];
+
 const STOP_SELECTORS = [
   '[data-testid="stop-button"]',
   'button[aria-label*="Stop"]',
@@ -150,7 +153,7 @@ async function clickVisibleControlByText(page, labels) {
     }
 
     const wanted = wantedLabels.map(normalized);
-    const nodes = Array.from(document.querySelectorAll('button,a,[role="button"]'));
+    const nodes = Array.from(document.querySelectorAll('button,a,[role="button"],[role="menuitem"],[role="menuitemradio"],[role="menuitemcheckbox"]'));
     const node = nodes.find((candidate) => {
       if (!visible(candidate)) return false;
       const text = normalized(candidate.innerText || candidate.textContent || candidate.getAttribute('aria-label'));
@@ -175,11 +178,12 @@ async function clickVisibleNodeByLineText(page, labels) {
     }
 
     const wanted = wantedLabels.map(normalized);
-    const selectors = ['button,a,[role="button"],[role="menuitem"],[role="option"]', 'li', 'div'];
+    const actionableSelector = 'button,a,[role="button"],[role="menuitem"],[role="menuitemradio"],[role="menuitemcheckbox"],[role="option"]';
+    const selectors = [actionableSelector, 'li', 'div'];
     for (const selector of selectors) {
       const node = Array.from(document.querySelectorAll(selector)).find((candidate) => {
         if (!visible(candidate)) return false;
-        if (selector === 'div' && candidate.querySelector('button,a,[role="button"],[role="menuitem"],[role="option"],li')) return false;
+        if (selector === 'div' && candidate.querySelector(`${actionableSelector},li`)) return false;
         const raw = candidate.innerText || candidate.textContent || candidate.getAttribute('aria-label');
         const text = normalized(raw);
         const lines = String(raw || '').split('\n').map(normalized).filter(Boolean);
@@ -199,7 +203,14 @@ async function clickFirstVisible(page, selectors) {
     const control = page.locator(selector).first();
     try {
       if (await control.count() > 0 && await control.isVisible({ timeout: 500 })) {
-        await control.click({ force: true });
+        try {
+          await control.click({ force: true });
+        } catch {
+          await control.evaluate((element) => {
+            element.scrollIntoView({ block: 'center', inline: 'center' });
+            element.click();
+          });
+        }
         return true;
       }
     } catch {
@@ -224,15 +235,76 @@ async function fillFirstVisibleInput(page, selectors, value) {
   return false;
 }
 
+async function ensureUsableViewport(page) {
+  const viewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight })).catch(() => null);
+  if (!viewport || viewport.width < 800 || viewport.height < 600) {
+    await page.setViewportSize({ width: 1440, height: 1000 }).catch(() => {});
+  }
+}
+
+async function hasFirstVisible(page, selectors, timeoutMs = 500) {
+  for (const selector of selectors) {
+    const control = page.locator(selector).first();
+    try {
+      if (await control.count() > 0 && await control.isVisible({ timeout: timeoutMs })) return true;
+    } catch {
+      // Try the next selector.
+    }
+  }
+  return false;
+}
+
+async function isGitHubConnectorActive(page) {
+  return page.evaluate(() => {
+    function normalized(value) {
+      return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    }
+
+    function visible(node) {
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    }
+
+    const roots = Array.from(document.querySelectorAll('[data-testid="composer-footer-actions"], form'));
+    for (const root of roots) {
+      const nodes = Array.from(root.querySelectorAll('button,[role="button"],[role="menuitem"],[role="menuitemradio"],[role="menuitemcheckbox"],div'));
+      for (const node of nodes) {
+        if (!visible(node)) continue;
+        const text = normalized(node.innerText || node.textContent);
+        const aria = normalized(node.getAttribute('aria-label'));
+        if (text === 'github' || aria === 'github' || aria.startsWith('github,')) return true;
+      }
+    }
+    return false;
+  });
+}
+
 async function openGitHubConnector(page) {
-  if (await clickVisibleControlByText(page, ['GitHub'])) {
+  const clickGitHub = async () => (
+    await clickVisibleControlByText(page, GITHUB_CONNECTOR_LABELS)
+    || await clickVisibleNodeByLineText(page, GITHUB_CONNECTOR_LABELS)
+  );
+
+  if (await clickGitHub()) {
     await page.waitForTimeout(500);
     return true;
   }
 
   if (await clickFirstVisible(page, TOOL_MENU_SELECTORS)) {
     await page.waitForTimeout(500);
-    if (await clickVisibleControlByText(page, ['GitHub'])) {
+    if (await clickGitHub()) {
+      await page.waitForTimeout(500);
+      return true;
+    }
+    if (await clickVisibleNodeByLineText(page, MORE_TOOLS_LABELS)) {
+      await page.waitForTimeout(500);
+      if (await clickGitHub()) {
+        await page.waitForTimeout(500);
+        return true;
+      }
+    }
+    if (await clickVisibleNodeByLineText(page, GITHUB_CONNECTOR_LABELS)) {
       await page.waitForTimeout(500);
       return true;
     }
@@ -261,19 +333,50 @@ export async function attachGitHubRepositories(page, repositories = []) {
   if (requested.length === 0) return { requested: [], selected: [] };
 
   const selected = [];
+  let toolSelected = false;
+  let promptScoped = false;
   for (const repository of requested) {
     if (!await openGitHubConnector(page)) {
       throw new Error('ChatGPT GitHub connector control was not found. Configure/connect GitHub in ChatGPT, then retry.');
     }
+    toolSelected = await isGitHubConnectorActive(page) || toolSelected;
+    if (await clickVisibleNodeByLineText(page, [repository])) {
+      selected.push(repository);
+      toolSelected = true;
+      await page.keyboard.press('Escape').catch(() => {});
+      await page.waitForTimeout(250);
+      continue;
+    }
+    if (toolSelected && !await hasFirstVisible(page, GITHUB_REPO_SEARCH_SELECTORS, 1500)) {
+      promptScoped = true;
+      await page.keyboard.press('Escape').catch(() => {});
+      await page.waitForTimeout(250);
+      continue;
+    }
     if (!await selectGitHubRepository(page, repository)) {
+      toolSelected = await isGitHubConnectorActive(page) || toolSelected;
+      if (toolSelected) {
+        promptScoped = true;
+        await page.keyboard.press('Escape').catch(() => {});
+        await page.waitForTimeout(250);
+        continue;
+      }
       throw new Error(`GitHub repository "${repository}" was not found in the ChatGPT connector. Check that it is indexed and visible in ChatGPT.`);
     }
     selected.push(repository);
+    toolSelected = true;
     await page.keyboard.press('Escape').catch(() => {});
     await page.waitForTimeout(250);
   }
 
-  return { requested, selected };
+  return {
+    requested,
+    selected,
+    toolSelected,
+    repositorySelection: promptScoped
+      ? selected.length > 0 ? 'mixed' : 'prompt-scoped'
+      : 'repo-picker',
+  };
 }
 
 export async function findProjectUrl(page, projectName) {
@@ -689,6 +792,7 @@ async function waitForPromptAccepted(page, composer, prompt, timeoutMs = 8000) {
 }
 
 export async function submitPrompt(page, { prompt, attachmentPath, githubRepositories = [] }) {
+  await ensureUsableViewport(page);
   let composer = await waitForComposer(page);
   await composer.evaluate((element) => {
     element.scrollIntoView({ block: 'center', inline: 'nearest' });

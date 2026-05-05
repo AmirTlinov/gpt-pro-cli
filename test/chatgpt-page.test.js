@@ -495,11 +495,113 @@ test('GitHub connector selector opens tool menu, searches, and selects exact rep
     `);
 
     const result = await attachGitHubRepositories(page, ['AmirTlinov/gpt-pro-cli']);
-    assert.deepEqual(result, {
-      requested: ['AmirTlinov/gpt-pro-cli'],
-      selected: ['AmirTlinov/gpt-pro-cli'],
-    });
+    assert.deepEqual(result.requested, ['AmirTlinov/gpt-pro-cli']);
+    assert.deepEqual(result.selected, ['AmirTlinov/gpt-pro-cli']);
+    assert.equal(result.repositorySelection, 'repo-picker');
     assert.equal(await page.locator('#selected').innerText(), 'AmirTlinov/gpt-pro-cli');
+  } finally {
+    await browser.close();
+  }
+});
+
+test('GitHub connector selector opens nested More tools menu when GitHub is not top-level', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const page = await browser.newPage();
+  try {
+    await page.setContent(`
+      <main>
+        <button id="tools" data-testid="composer-plus-btn" aria-label="Добавляйте файлы и многое другое">+</button>
+        <div id="tool-menu" role="menu" style="display:none">
+          <div role="menuitem" id="more">Больше</div>
+        </div>
+        <div id="more-menu" role="menu" style="display:none">
+          <div role="menuitemradio" id="github">GitHub</div>
+        </div>
+        <div id="github-menu" style="display:none">
+          <input id="repo-search" placeholder="Поиск в репозиториях..." />
+          <div role="menuitem" id="repo" style="display:none">AmirTlinov/gpt-pro-cli</div>
+        </div>
+        <div id="selected"></div>
+        <div id="prompt-textarea" contenteditable="true" role="textbox"></div>
+        <script>
+          document.querySelector('#tools').addEventListener('click', () => {
+            document.querySelector('#tool-menu').style.display = 'block';
+          });
+          document.querySelector('#more').addEventListener('click', () => {
+            document.querySelector('#more-menu').style.display = 'block';
+          });
+          document.querySelector('#github').addEventListener('click', () => {
+            document.querySelector('#github-menu').style.display = 'block';
+          });
+          document.querySelector('#repo-search').addEventListener('input', (event) => {
+            if (event.target.value === 'AmirTlinov/gpt-pro-cli') {
+              document.querySelector('#repo').style.display = 'block';
+            }
+          });
+          document.querySelector('#repo').addEventListener('click', () => {
+            document.querySelector('#selected').textContent = 'AmirTlinov/gpt-pro-cli';
+          });
+        </script>
+      </main>
+    `);
+
+    const result = await attachGitHubRepositories(page, ['AmirTlinov/gpt-pro-cli']);
+    assert.deepEqual(result.selected, ['AmirTlinov/gpt-pro-cli']);
+    assert.equal(result.repositorySelection, 'repo-picker');
+    assert.equal(await page.locator('#selected').innerText(), 'AmirTlinov/gpt-pro-cli');
+  } finally {
+    await browser.close();
+  }
+});
+
+test('GitHub connector selector treats current tool-only UI as prompt-scoped grounding', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const page = await browser.newPage();
+  try {
+    await page.setContent(`
+      <main>
+        <button data-testid="composer-plus-btn" aria-label="Добавляйте файлы и многое другое">+</button>
+        <div id="tool-menu" role="menu" style="display:none">
+          <div role="menuitem" id="more">Больше</div>
+        </div>
+        <div id="more-menu" role="menu" style="display:none">
+          <div role="menuitemradio" id="github">GitHub</div>
+        </div>
+        <div data-testid="composer-footer-actions"></div>
+        <div id="prompt-textarea" contenteditable="true" role="textbox"></div>
+        <script>
+          document.querySelector('[data-testid="composer-plus-btn"]').addEventListener('click', () => {
+            document.querySelector('#tool-menu').style.display = 'block';
+          });
+          document.querySelector('#more').addEventListener('click', () => {
+            document.querySelector('#more-menu').style.display = 'block';
+          });
+          document.querySelector('#github').addEventListener('click', () => {
+            document.querySelector('[data-testid="composer-footer-actions"]').innerHTML = '<button>GitHub</button>';
+          });
+        </script>
+      </main>
+    `);
+
+    const result = await attachGitHubRepositories(page, ['AmirTlinov/gpt-pro-cli']);
+    assert.deepEqual(result.requested, ['AmirTlinov/gpt-pro-cli']);
+    assert.deepEqual(result.selected, []);
+    assert.equal(result.toolSelected, true);
+    assert.equal(result.repositorySelection, 'prompt-scoped');
   } finally {
     await browser.close();
   }

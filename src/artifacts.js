@@ -106,11 +106,14 @@ function receiptWarnings(data) {
     warnings.push(`project membership was not proven for requested project: ${meta.requestedProject}`);
   }
   if (Array.isArray(meta.githubRepositories) && meta.githubRepositories.length > 0) {
-    const selected = new Set(meta.githubConnector?.selected || []);
+    const connector = meta.githubConnector || {};
+    const selected = new Set(connector.selected || []);
+    const promptScoped = connector.toolSelected === true
+      && ['prompt-scoped', 'mixed'].includes(connector.repositorySelection);
     for (const repository of meta.githubRepositories) {
-      if (!selected.has(repository)) warnings.push(`GitHub connector did not report selected repository: ${repository}`);
+      if (!selected.has(repository) && !promptScoped) warnings.push(`GitHub connector did not report selected repository: ${repository}`);
     }
-    if (meta.githubConnector?.error) warnings.push(`GitHub connector UI selection failed: ${meta.githubConnector.error}`);
+    if (connector.error) warnings.push(`GitHub connector UI selection failed: ${connector.error}`);
   }
   if (!meta.project) warnings.push('project is missing in metadata');
   if (!meta.sessionUrl) warnings.push('session URL is missing in metadata');

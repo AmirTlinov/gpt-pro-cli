@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { PACKAGE_VERSION, paths, settings } from './config.js';
+import { githubRepoValues, resolveGitHubRepositories } from './github.js';
 import {
   archiveLocalChats,
   nextMessageDir,
@@ -31,7 +32,7 @@ Commands:
   gpt-pro doctor
   gpt-pro login
   gpt-pro sessions [--project CLI_QUESTIONS]
-  gpt-pro ask [--session new|current|<url>] [--project CLI_QUESTIONS] [--github-repo owner/repo] [--attach <zip-or-dir>] [--timeout <ms>] -- <prompt>
+  gpt-pro ask [--session new|current|<url>] [--project CLI_QUESTIONS] [--github-repo owner/repo|auto] [--attach <zip-or-dir>] [--timeout <ms>] -- <prompt>
   gpt-pro smoke [--timeout <ms>]
   gpt-pro archive [--session all|latest|<index|id>] [--project CLI_QUESTIONS] [--delete-local]
   gpt-pro stop
@@ -51,28 +52,11 @@ function resolvePath(value) {
   return path.resolve(process.cwd(), value);
 }
 
-function githubRepoValues(value) {
-  return String(value || '')
-    .split(/[,\s]+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function normalizeGitHubRepositories(values = []) {
-  const repositories = [...new Set(values.flatMap(githubRepoValues))];
-  for (const repository of repositories) {
-    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
-      throw new Error(`Invalid GitHub repository "${repository}". Use owner/repo, for example AmirTlinov/gpt-pro-cli.`);
-    }
-  }
-  return repositories;
-}
-
 function defaultGitHubRepositories() {
-  return normalizeGitHubRepositories([
+  return [
     process.env.GPT_PRO_GITHUB_REPO || '',
     process.env.GPT_PRO_GITHUB_REPOS || '',
-  ]);
+  ];
 }
 
 function githubGroundedPrompt(prompt, repositories = []) {
@@ -138,7 +122,7 @@ function parseAskArgs(argv) {
   if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) {
     throw new Error('--timeout must be a positive number of milliseconds');
   }
-  return { ...options, prompt, githubRepositories: normalizeGitHubRepositories(options.githubRepositories) };
+  return { ...options, prompt, githubRepositories: resolveGitHubRepositories(options.githubRepositories) };
 }
 
 function parseSessionsArgs(argv) {
@@ -358,7 +342,7 @@ async function sessions(argv) {
 
 async function runAsk(options) {
   const rootPaths = paths();
-  const githubRepositories = normalizeGitHubRepositories(options.githubRepositories || []);
+  const githubRepositories = resolveGitHubRepositories(options.githubRepositories || []);
   const sentPrompt = githubGroundedPrompt(options.prompt, githubRepositories);
   const pendingId = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   const pendingDir = path.join(rootPaths.runtimeDir, 'pending', pendingId);

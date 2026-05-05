@@ -10,13 +10,13 @@ answer plus files on disk. It is a browser bridge, not an OpenAI API client.
 ## Install
 
 ```sh
-npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.15/gpt-pro-cli-0.1.15.tgz
+npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.16/gpt-pro-cli-0.1.16.tgz
 ```
 
 Or install the same release from the Git tag:
 
 ```sh
-npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.15
+npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.16
 ```
 
 For local development:
@@ -41,7 +41,7 @@ gpt-pro ask -- "Think through this carefully..."
 gpt-pro doctor
 gpt-pro login
 gpt-pro ask --attach ./bundle.zip -- "Question for ChatGPT"
-gpt-pro ask --github-repo AmirTlinov/gpt-pro-cli -- "Use GitHub connector context and review this design"
+gpt-pro ask --github-repo auto -- "Use GitHub connector context and review this checkout"
 gpt-pro sessions
 gpt-pro ask --session latest -- "Continue from the latest project session"
 gpt-pro archive
@@ -53,7 +53,7 @@ Agents can also use the bundled sidecar helper for quiet parallel thinking:
 
 ```sh
 printf '%s\n' "Question for GPT PRO" | gpt-pro-sidecar start --label side-thinking
-printf '%s\n' "Repo-grounded question" | gpt-pro-sidecar start --label review --github-repo AmirTlinov/gpt-pro-cli
+printf '%s\n' "Repo-grounded question" | gpt-pro-sidecar start --label review --github-repo auto
 gpt-pro-sidecar wait <run-dir>
 printf '%s\n' "Final pressure" | gpt-pro-sidecar flagship <run-dir>
 ```
@@ -72,19 +72,29 @@ can use GPT PRO without turning the chat into manual copy/paste.
 
 ## GitHub Grounding
 
-For repo-specific questions, pass `--github-repo owner/repo`. The CLI tries to
-select that repository through ChatGPT's GitHub connector, sends a prompt that
-explicitly requires using the connector, and records the requested/selected
-repositories in `meta.json` and `receipt.json`.
+For repo-specific questions from a Git checkout, pass `--github-repo auto`. The
+CLI resolves the matching GitHub repository from `origin`; if there is no
+`origin`, it uses the single unambiguous GitHub remote. Missing, non-GitHub, or
+ambiguous remotes fail before the browser is touched, so agents do not silently
+review the wrong repo.
 
 ```sh
-gpt-pro ask --github-repo AmirTlinov/gpt-pro-cli -- "Find the risky parts of the current CLI design"
+gpt-pro ask --github-repo auto -- "Find the risky parts of this repository"
 ```
 
-The repository should already be visible/indexed in ChatGPT's GitHub connector.
-If ChatGPT's connector UI cannot be selected reliably, the CLI still sends the
-connector-required prompt but records a warning in `receipt.json`. Treat that as
-"prompt-enforced, UI selection unconfirmed", not as silent success.
+You can still pass `--github-repo owner/repo` explicitly, or set
+`GPT_PRO_GITHUB_REPO=auto` for a repo-scoped agent shell. The sidecar preserves
+the resolved repo for `flagship`, so a background review can continue in the same
+thread without re-deriving the repo manually.
+
+The repository should already be visible/indexed to ChatGPT's GitHub connector.
+Current ChatGPT UI may expose GitHub as a tool-only pill instead of a per-repo
+picker; in that case the receipt records
+`githubConnector.repositorySelection: "prompt-scoped"` and keeps the run clean
+only after the GitHub tool was actually selected. If even the GitHub tool cannot
+be selected, the CLI still sends the connector-required prompt but records a
+warning in `receipt.json`. Treat that as "prompt-enforced, UI selection
+unconfirmed", not as silent success.
 
 ## Files
 

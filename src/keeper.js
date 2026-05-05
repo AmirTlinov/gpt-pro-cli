@@ -155,7 +155,10 @@ async function browserPage() {
       context = await chromium.launchPersistentContext(rootPaths.profileDir, browserLaunchOptions());
     }
   }
-  if (activePage && !activePage.isClosed()) return activePage;
+  if (activePage && !activePage.isClosed()) {
+    await activePage.setViewportSize({ width: 1440, height: 1000 }).catch(() => {});
+    return activePage;
+  }
   activePage = context.pages()[0] || await context.newPage();
   await activePage.setViewportSize({ width: 1440, height: 1000 }).catch(() => {});
   return activePage;

@@ -8,10 +8,11 @@ import { pathExists } from '../src/fsx.js';
 
 const sidecarPath = path.resolve('bin/gpt-pro-sidecar');
 
-function runSidecar(args, { env, input = '', timeoutMs = 10_000 } = {}) {
+function runSidecar(args, { env, input = '', timeoutMs = 10_000, cwd } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(sidecarPath, args, {
       env,
+      cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -94,6 +95,8 @@ console.log('answer: ' + answerPath);
 console.log('files: ' + path.join(fakeDir, 'files-' + count));
 console.log('receipt: ' + path.join(fakeDir, 'receipt-' + count + '.json'));
 console.log('project: ' + project);
+const printedGithubRepos = githubRepos.map((repo) => repo === 'auto' ? 'AmirTlinov/gpt-pro-cli' : repo);
+if (printedGithubRepos.length) console.log('github: ' + printedGithubRepos.join(', '));
 console.log('warnings: ' + (warn ? '1' : '0'));
 console.log('url: https://chatgpt.com/c/fake-' + count);
 fs.writeFileSync(path.join(fakeDir, 'receipt-' + count + '.json'), JSON.stringify({ status: warn ? 'warn' : 'ok', warnings: warn ? ['download failed'] : [], files: [{ path: 'answer.md' }] }));
@@ -131,6 +134,7 @@ fs.writeFileSync(path.join(fakeDir, 'receipt-' + count + '.json'), JSON.stringif
   assert.match(status.stdout, /^answer: .+answer-1\.md$/m);
   assert.match(status.stdout, /^receipt: .+receipt-1\.json$/m);
   assert.match(status.stdout, /^project: WORK_PROJECT$/m);
+  assert.match(status.stdout, /^github: AmirTlinov\/gpt-pro-cli$/m);
   assert.match(status.stdout, /^warnings: 0$/m);
 
   const shown = await runSidecar(['show', runDir], { env });
@@ -217,6 +221,101 @@ fs.writeFileSync(path.join(fakeDir, 'receipt-' + count + '.json'), JSON.stringif
   assert.match(warnWaited.stdout, /^warnings: 1$/m);
 });
 
+
+test('gpt-pro-sidecar carries auto GitHub repo into flagship as resolved owner/repo', async () => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-sidecar-auto-github-'));
+  const repoCwd = path.join(temp, 'repo');
+  const fakeBin = path.join(temp, 'bin');
+  const fakeDir = path.join(temp, 'fake');
+  await fs.mkdir(repoCwd, { recursive: true });
+  const repoRealCwd = await fs.realpath(repoCwd);
+  await fs.mkdir(fakeBin, { recursive: true });
+  await fs.mkdir(fakeDir, { recursive: true });
+  const fakeGptPro = path.join(fakeBin, 'gpt-pro');
+  await fs.writeFile(fakeGptPro, `#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const args = process.argv.slice(2);
+const fakeDir = process.env.GPT_PRO_FAKE_DIR;
+let session = '';
+let project = '';
+let prompt = '';
+const githubRepos = [];
+for (let index = 0; index < args.length; index += 1) {
+  const arg = args[index];
+  if (arg === '--session') session = args[++index];
+  else if (arg === '--project') project = args[++index];
+  else if (arg === '--github-repo') githubRepos.push(args[++index]);
+  else if (arg === '--') {
+    prompt = args.slice(index + 1).join(' ');
+    break;
+  }
+}
+fs.mkdirSync(fakeDir, { recursive: true });
+const countFile = path.join(fakeDir, 'count');
+const count = fs.existsSync(countFile) ? Number(fs.readFileSync(countFile, 'utf8')) + 1 : 1;
+fs.writeFileSync(countFile, String(count));
+const answerPath = path.join(fakeDir, 'answer-' + count + '.md');
+fs.writeFileSync(answerPath, session === 'new' ? 'AUTO FIRST' : 'AUTO FLAGSHIP');
+fs.appendFileSync(path.join(fakeDir, 'calls.jsonl'), JSON.stringify({ cwd: process.cwd(), args, session, project, githubRepos, prompt, answerPath }) + '\\n');
+const printedGithubRepos = githubRepos.map((repo) => repo === 'auto' ? 'AmirTlinov/gpt-pro-cli' : repo);
+console.log('OK');
+console.log('answer: ' + answerPath);
+console.log('files: ' + path.join(fakeDir, 'files-' + count));
+console.log('receipt: ' + path.join(fakeDir, 'receipt-' + count + '.json'));
+console.log('project: ' + project);
+if (printedGithubRepos.length) console.log('github: ' + printedGithubRepos.join(', '));
+console.log('warnings: 0');
+console.log('url: https://chatgpt.com/c/auto-' + count);
+fs.writeFileSync(path.join(fakeDir, 'receipt-' + count + '.json'), JSON.stringify({ status: 'ok', warnings: [], files: [{ path: 'answer.md' }] }));
+`, { mode: 0o755 });
+
+  const env = {
+    ...process.env,
+    PATH: `${fakeBin}${path.delimiter}${process.env.PATH}`,
+    GPT_PRO_BIN: fakeGptPro,
+    GPT_PRO_FAKE_DIR: fakeDir,
+    GPT_PRO_SIDECAR_DIR: path.join(temp, 'runs'),
+  };
+
+  const started = await runSidecar([
+    'start',
+    '--label',
+    'Auto GitHub Probe',
+    '--project',
+    'WORK_PROJECT',
+    '--github-repo',
+    'auto',
+  ], { env, input: 'Review current repo', cwd: repoCwd });
+  assert.equal(started.code, 0, started.stderr);
+  const runDir = field(started.stdout, 'run');
+  assert.ok(runDir);
+  await waitForFile(path.join(runDir, 'exit_code'));
+  assert.equal((await fs.readFile(path.join(runDir, 'exit_code'), 'utf8')).trim(), '0');
+
+  const status = await runSidecar(['status', runDir], { env, cwd: temp });
+  assert.equal(status.code, 0, status.stderr);
+  assert.match(status.stdout, /^github: AmirTlinov\/gpt-pro-cli$/m);
+
+  const flagship = await runSidecar(['flagship', runDir, '--project', 'WORK_PROJECT'], {
+    env,
+    input: 'Final review pass',
+    cwd: temp,
+  });
+  assert.equal(flagship.code, 0, flagship.stderr);
+  assert.match(flagship.stdout, /^github: AmirTlinov\/gpt-pro-cli$/m);
+
+  const calls = (await fs.readFile(path.join(fakeDir, 'calls.jsonl'), 'utf8'))
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].cwd, repoRealCwd);
+  assert.deepEqual(calls[0].githubRepos, ['auto']);
+  assert.equal(calls[1].cwd, repoRealCwd);
+  assert.deepEqual(calls[1].githubRepos, ['AmirTlinov/gpt-pro-cli']);
+});
+
 test('gpt-pro-sidecar status fails closed for dead workers without receipts', async () => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-sidecar-stale-'));
   const runDir = path.join(temp, 'runs', '20260505T000000Z-stale-1');
@@ -230,4 +329,3 @@ test('gpt-pro-sidecar status fails closed for dead workers without receipts', as
   assert.match(result.stdout, /^FAILED/m);
   assert.match(result.stdout, /worker exited before writing exit_code/);
 });
-

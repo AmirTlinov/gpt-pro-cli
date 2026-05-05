@@ -7,8 +7,8 @@ usage() {
 gpt-pro-sidecar
 
 Commands:
-  gpt-pro-sidecar start [--label <name>] [--project CLI_QUESTIONS] [--github-repo owner/repo] [--timeout <ms>]
-  gpt-pro-sidecar flagship <run-dir> [--project CLI_QUESTIONS] [--github-repo owner/repo] [--timeout <ms>]
+  gpt-pro-sidecar start [--label <name>] [--project CLI_QUESTIONS] [--github-repo owner/repo|auto] [--timeout <ms>]
+  gpt-pro-sidecar flagship <run-dir> [--project CLI_QUESTIONS] [--github-repo owner/repo|auto] [--timeout <ms>]
   gpt-pro-sidecar status <run-dir>
   gpt-pro-sidecar wait <run-dir> [--timeout <ms>]
   gpt-pro-sidecar show <run-dir>
@@ -129,6 +129,7 @@ start() {
   if [[ ${#github_repos[@]} -gt 0 ]]; then
     printf '%s\n' "${github_repos[@]}" > "$run_dir/github_repos"
   fi
+  pwd -P > "$run_dir/cwd"
   date -u +"%Y-%m-%dT%H:%M:%SZ" > "$run_dir/started_at"
 
   local node_bin worker child_pid
@@ -211,6 +212,74 @@ error_summary() {
   ' "$run_dir/stderr.txt"
 }
 
+trim_text() {
+  local value="${1:-}"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+repo_exists() {
+  local needle="${1:-}"
+  shift || true
+  local item
+  for item in "$@"; do
+    [[ "$item" == "$needle" ]] && return 0
+  done
+  return 1
+}
+
+github_repos_from_stdout() {
+  local run_dir="${1:?missing run-dir}"
+  local raw part repo
+  raw="$(field_from_stdout "$run_dir" "github" || true)"
+  [[ -n "$raw" ]] || return 1
+  IFS=',' read -ra parts <<< "$raw"
+  for part in "${parts[@]}"; do
+    repo="$(trim_text "$part")"
+    [[ -n "$repo" ]] && printf '%s\n' "$repo"
+  done
+}
+
+normalize_flagship_github_repos() {
+  local run_dir="${1:?missing run-dir}"
+  shift || true
+  local output=()
+  local auto_requested=0
+  local repo
+  for repo in "$@"; do
+    if [[ "$repo" == "auto" ]]; then
+      auto_requested=1
+      continue
+    fi
+    if [[ -n "$repo" ]]; then
+      if [[ ${#output[@]} -eq 0 ]] || ! repo_exists "$repo" "${output[@]}"; then
+        output+=("$repo")
+      fi
+    fi
+  done
+  if [[ "$auto_requested" == "1" ]]; then
+    local resolved=()
+    local resolved_repo
+    while IFS= read -r resolved_repo; do
+      [[ -n "$resolved_repo" ]] && resolved+=("$resolved_repo")
+    done < <(github_repos_from_stdout "$run_dir" || true)
+    if [[ ${#resolved[@]} -gt 0 ]]; then
+      for repo in "${resolved[@]}"; do
+        if [[ -n "$repo" ]]; then
+          if [[ ${#output[@]} -eq 0 ]] || ! repo_exists "$repo" "${output[@]}"; then
+            output+=("$repo")
+          fi
+        fi
+      done
+    elif [[ ${#output[@]} -eq 0 ]] || ! repo_exists "auto" "${output[@]}"; then
+      output+=("auto")
+    fi
+  fi
+  if [[ ${#output[@]} -gt 0 ]]; then
+    printf '%s\n' "${output[@]}"
+  fi
+}
 
 result_exit_code() {
   local stdout_file="${1:?missing stdout file}"
@@ -233,17 +302,19 @@ result_exit_code() {
 }
 print_result_fields() {
   local run_dir="${1:?missing run-dir}"
-  local answer receipt warnings url project files error
+  local answer receipt warnings url project files github error
   answer="$(field_from_stdout "$run_dir" "answer" || true)"
   files="$(field_from_stdout "$run_dir" "files" || true)"
   receipt="$(field_from_stdout "$run_dir" "receipt" || true)"
   project="$(field_from_stdout "$run_dir" "project" || true)"
+  github="$(field_from_stdout "$run_dir" "github" || true)"
   warnings="$(field_from_stdout "$run_dir" "warnings" || true)"
   url="$(field_from_stdout "$run_dir" "url" || true)"
   [[ -n "$answer" ]] && printf 'answer: %s\n' "$answer"
   [[ -n "$files" ]] && printf 'files: %s\n' "$files"
   [[ -n "$receipt" ]] && printf 'receipt: %s\n' "$receipt"
   [[ -n "$project" ]] && printf 'project: %s\n' "$project"
+  [[ -n "$github" ]] && printf 'github: %s\n' "$github"
   [[ -n "$warnings" ]] && printf 'warnings: %s\n' "$warnings"
   [[ -n "$url" ]] && printf 'url: %s\n' "$url"
   error="$(error_summary "$run_dir" || true)"
@@ -291,13 +362,23 @@ flagship() {
     echo "ERROR run failed: $run_dir" >&2
     exit 3
   fi
+
+  if [[ ${#github_repos[@]} -gt 0 ]]; then
+    local existing_github_repos=("${github_repos[@]}")
+    local normalized_repo
+    github_repos=()
+    while IFS= read -r normalized_repo; do
+      [[ -n "$normalized_repo" ]] && github_repos+=("$normalized_repo")
+    done < <(normalize_flagship_github_repos "$run_dir" "${existing_github_repos[@]}")
+  fi
+
   local gpt_pro_bin
   if ! gpt_pro_bin="$(resolve_gpt_pro)"; then
     echo "ERROR gpt-pro is not available via GPT_PRO_BIN, PATH, or /Users/amir/.volta/bin/gpt-pro" >&2
     exit 127
   fi
 
-  local url answer_file first_answer extra_prompt out_dir prompt_file
+  local url answer_file first_answer extra_prompt out_dir prompt_file source_cwd
   url="$(field_from_stdout "$run_dir" "url" || true)"
   answer_file="$(field_from_stdout "$run_dir" "answer" || true)"
   if [[ -z "$url" ]]; then
@@ -310,6 +391,9 @@ flagship() {
     first_answer="$(cat "$run_dir/stdout.txt")"
   fi
   extra_prompt="$(cat)"
+  source_cwd=""
+  [[ -f "$run_dir/cwd" ]] && source_cwd="$(cat "$run_dir/cwd" || true)"
+  [[ -n "$source_cwd" && ! -d "$source_cwd" ]] && source_cwd=""
   out_dir="$run_dir/flagship-$(date -u +%Y%m%dT%H%M%SZ)"
   mkdir -p "$out_dir"
   prompt_file="$out_dir/prompt.md"
@@ -326,17 +410,29 @@ PROMPT
 
   set +e
   if [[ ${#github_repos[@]} -gt 0 ]]; then
-    github_args=()
+    local github_args=()
     for repo in "${github_repos[@]}"; do
       github_args+=(--github-repo "$repo")
     done
-    "$gpt_pro_bin" ask --session "$url" --project "$project" --timeout "$timeout" "${github_args[@]}" -- "$(cat "$prompt_file")" \
-      > "$out_dir/stdout.txt" \
-      2> "$out_dir/stderr.txt"
+    if [[ -n "$source_cwd" ]]; then
+      (cd "$source_cwd" && "$gpt_pro_bin" ask --session "$url" --project "$project" --timeout "$timeout" "${github_args[@]}" -- "$(cat "$prompt_file")") \
+        > "$out_dir/stdout.txt" \
+        2> "$out_dir/stderr.txt"
+    else
+      "$gpt_pro_bin" ask --session "$url" --project "$project" --timeout "$timeout" "${github_args[@]}" -- "$(cat "$prompt_file")" \
+        > "$out_dir/stdout.txt" \
+        2> "$out_dir/stderr.txt"
+    fi
   else
-    "$gpt_pro_bin" ask --session "$url" --project "$project" --timeout "$timeout" -- "$(cat "$prompt_file")" \
-      > "$out_dir/stdout.txt" \
-      2> "$out_dir/stderr.txt"
+    if [[ -n "$source_cwd" ]]; then
+      (cd "$source_cwd" && "$gpt_pro_bin" ask --session "$url" --project "$project" --timeout "$timeout" -- "$(cat "$prompt_file")") \
+        > "$out_dir/stdout.txt" \
+        2> "$out_dir/stderr.txt"
+    else
+      "$gpt_pro_bin" ask --session "$url" --project "$project" --timeout "$timeout" -- "$(cat "$prompt_file")" \
+        > "$out_dir/stdout.txt" \
+        2> "$out_dir/stderr.txt"
+    fi
   fi
   local code=$?
   set -e

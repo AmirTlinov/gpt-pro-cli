@@ -233,6 +233,29 @@ test('CLI ask talks through keeper and stop cleans runtime file', async (t) => {
     assert.match(groundedPrompt, /Repository grounding requirement:/);
     assert.match(groundedPrompt, /Use the ChatGPT GitHub connector/);
 
+    const gitWorktree = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-auto-github-worktree-'));
+    await execFile('git', ['init'], { cwd: gitWorktree });
+    await execFile('git', ['remote', 'add', 'origin', 'https://github.com/AmirTlinov/gpt-pro-cli.git'], { cwd: gitWorktree });
+    const autoGrounded = await execFile(process.execPath, [
+      cliPath,
+      'ask',
+      '--session',
+      'new',
+      '--github-repo',
+      'auto',
+      '--timeout',
+      '8000',
+      '--',
+      'repo-auto-grounded nonce',
+    ], { env, cwd: gitWorktree, timeout: 30_000 });
+    assert.match(autoGrounded.stdout, /^OK/m);
+    assert.match(autoGrounded.stdout, /^github: AmirTlinov\/gpt-pro-cli$/m);
+    const autoReceiptPath = autoGrounded.stdout.match(/^receipt: (.+)$/m)?.[1];
+    assert.ok(autoReceiptPath);
+    const autoReceipt = JSON.parse(await fs.readFile(autoReceiptPath, 'utf8'));
+    assert.deepEqual(autoReceipt.githubRepositories, ['AmirTlinov/gpt-pro-cli']);
+    assert.deepEqual(autoReceipt.githubConnector.selected, ['AmirTlinov/gpt-pro-cli']);
+
     const latest = await execFile(process.execPath, [
       cliPath,
       'ask',
