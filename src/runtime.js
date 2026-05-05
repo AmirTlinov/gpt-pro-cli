@@ -175,7 +175,7 @@ async function terminatePid(pid) {
 
 async function profileProcessPids(profileDir) {
   const profileArg = `--user-data-dir=${path.resolve(profileDir)}`;
-  const browserProcessPattern = /(Google Chrome|Chromium|chrome|chromium)( Helper| Framework|\\.app|$)/i;
+  const browserProcessPattern = /((Google Chrome|Chromium)( Helper| Framework|\.app|\s|$)|(^|[/\s])(chrome|chromium)( Helper| Framework|\.app|\s|$))/i;
   try {
     const { stdout } = await execFile('ps', ['-axo', 'pid=,command='], { maxBuffer: 1024 * 1024 });
     return stdout
@@ -196,14 +196,22 @@ async function profileProcessPids(profileDir) {
 
 export async function cleanupProfileProcesses(profileDir) {
   const killed = new Set();
-  for (let round = 0; round < 5; round += 1) {
+  const deadline = Date.now() + 10_000;
+  let emptySince = 0;
+  while (Date.now() < deadline) {
     const pids = await profileProcessPids(profileDir);
-    if (pids.length === 0) break;
+    if (pids.length === 0) {
+      emptySince ||= Date.now();
+      if (Date.now() - emptySince >= 600) break;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      continue;
+    }
+    emptySince = 0;
     for (const pid of pids) {
       killed.add(pid);
       await terminatePid(pid);
     }
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
   return killed.size;
 }
