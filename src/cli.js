@@ -75,6 +75,7 @@ function formatBackgroundWindowLine(backgroundWindow) {
     `strict=${Boolean(backgroundWindow.strict)}`,
   ];
   if (backgroundWindow.windowId !== null && backgroundWindow.windowId !== undefined) parts.push(`window-id=${backgroundWindow.windowId}`);
+  if (backgroundWindow.pageCreation?.method) parts.push(`page=${backgroundWindow.pageCreation.method}`);
   if (bounds.windowState) parts.push(`state=${bounds.windowState}`);
   if (bounds.left !== null && bounds.left !== undefined) parts.push(`left=${bounds.left}`);
   if (bounds.top !== null && bounds.top !== undefined) parts.push(`top=${bounds.top}`);
@@ -379,7 +380,7 @@ async function doctor() {
     `chatgpt: ${settings().baseUrl}`,
     `project: ${settings().projectName}`,
     `browser-mode: ${settings().browserMode}`,
-    `background-window: no-startup-window=${settings().macosNoStartupWindow ? 'on' : 'off'} strict=${settings().strictBackground ? 'on' : 'off'}`,
+    `background-window: no-startup-window=${settings().macosNoStartupWindow ? 'on' : 'off'} focus-guard=${settings().macosFocusGuard ? 'on' : 'off'} strict=${settings().strictBackground ? 'on' : 'off'}`,
     `version: ${PACKAGE_VERSION}`,
     `chrome: ${chromeFound ? chromeApp : 'not found at /Applications/Google Chrome.app'}`,
     `keeper: ${keeperLine}`,
@@ -394,11 +395,14 @@ function formatKeeperStatus(status) {
   const page = status.page || null;
   const lines = [
     'OK',
-    `keeper: ${status.browserAlive ? `${status.mode} pid=${status.pid} browser=${status.browserPid || ''}` : 'unhealthy'}`,
+    `keeper: ${status.mode} pid=${status.pid}${status.browserAlive ? ` browser=${status.browserPid || ''}` : ' browser=not-started'}`,
     `queue-depth: ${status.queueDepth ?? 0}`,
   ];
   const backgroundLine = formatBackgroundWindowLine(status.backgroundWindow);
   if (backgroundLine) lines.push(backgroundLine);
+  if (status.focusGuard) {
+    lines.push(`focus-guard: enabled=${Boolean(status.focusGuard.enabled)} active=${Boolean(status.focusGuard.active)} previous=${status.focusGuard.previousApp || 'none'}${status.focusGuard.error ? ` error=${compactLine(status.focusGuard.error, 120)}` : ''}`);
+  }
   if (task) {
     const elapsedMs = task.startedAt ? Date.now() - Date.parse(task.startedAt) : null;
     lines.push(`task: ${task.command || 'unknown'} ${task.phase || task.state || 'running'}${elapsedMs ? ` elapsed=${formatDuration(elapsedMs)}` : ''}`);

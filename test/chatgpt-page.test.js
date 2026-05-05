@@ -1388,7 +1388,7 @@ test('submitPrompt cleans temporary GitHub selection if prompt submission fails 
     }
 
     assert.ok(error);
-    assert.match(error.message, /Send button not found|Prompt was not submitted/);
+    assert.match(error.message, /Send button not found|No DOM-clickable ChatGPT send button was found|Prompt was not submitted/);
     assert.equal(error.githubConnector.cleanup.status, 'ok');
     assert.deepEqual(error.githubConnector.cleanup.cleaned, [{ repository: 'AmirTlinov/gpt-pro-cli', state: 'unselected' }]);
     assert.equal(error.githubConnector.cleanup.removedTool, true);

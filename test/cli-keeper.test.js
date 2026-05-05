@@ -48,6 +48,15 @@ test('doctor defaults agent traffic to background browser mode', async () => {
   assert.match(stdout, /^browser-mode: background$/m);
 });
 
+test('macOS focus guard follows the latest non-Chrome app instead of activating a stale desktop', async () => {
+  const source = await fs.readFile(path.resolve('src/keeper.js'), 'utf8');
+  assert.match(source, /set lastApp to item 1 of argv/);
+  assert.match(source, /set lastApp to frontApp/);
+  assert.match(source, /set lastPid to frontPid/);
+  assert.doesNotMatch(source, /tell application previousApp to activate/);
+  assert.doesNotMatch(source, /restorePreviousAppIfChromeIsFrontmost/);
+});
+
 async function profileProcessLines(profileDir) {
   const { stdout } = await execFile('ps', ['-axo', 'pid=,command=']);
   return stdout
@@ -55,8 +64,51 @@ async function profileProcessLines(profileDir) {
     .filter((line) => line.includes(`--user-data-dir=${profileDir}`));
 }
 
-function fakeChatGptServer() {
-  let hasProject = false;
+async function frontmostApplication() {
+  const { stdout } = await execFile('osascript', [
+    '-e',
+    'tell application "System Events" to get name of first application process whose frontmost is true',
+  ], { timeout: 1000 });
+  return stdout.trim();
+}
+
+function isChromeApplicationName(value) {
+  return /^(Google Chrome|Chromium)$/i.test(String(value || '').trim());
+}
+
+async function runCliWithFrontmostSamples(args, { env, timeoutMs = 30_000 } = {}) {
+  const samples = [];
+  let stop = false;
+  const sampler = (async () => {
+    while (!stop) {
+      samples.push(await frontmostApplication().catch((error) => `ERROR:${error.message}`));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  })();
+  const child = spawn(process.execPath, [cliPath, ...args], {
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk;
+  });
+  const timer = setTimeout(() => {
+    child.kill('SIGTERM');
+  }, timeoutMs);
+  const code = await new Promise((resolve) => child.on('exit', resolve));
+  clearTimeout(timer);
+  stop = true;
+  await sampler;
+  return { code, stdout, stderr, samples };
+}
+
+function fakeChatGptServer(options = {}) {
+  let hasProject = Boolean(options.hasProjectInitially);
   const stableProjectId = 'g-p-69f7c0903ae88191b78a7ca2f00838e0';
   const projectId = `${stableProjectId}-cli-questions`;
   const smokeSentinel = process.env.GPT_PRO_SMOKE_SENTINEL || 'GPT_PRO_SMOKE_FAKE';
@@ -196,7 +248,7 @@ test('concurrent CLI asks use one serialized keeper without mixed prompts', asyn
   }
 
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-concurrent-e2e-'));
-  const { server, url } = await fakeChatGptServer();
+  const { server, url } = await fakeChatGptServer({ hasProjectInitially: true });
   const env = {
     ...process.env,
     GPT_PRO_HOME: home,
@@ -245,14 +297,14 @@ test('concurrent CLI asks use one serialized keeper without mixed prompts', asyn
   }
 });
 
-test('CLI ask progress suppresses elapsed-only noise on stderr', async (t) => {
+test('CLI ask progress reports semantic changes without elapsed-only noise on stderr', async (t) => {
   if (!await pathExists('/Applications/Google Chrome.app')) {
     t.skip('Google Chrome is not installed');
     return;
   }
 
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-progress-e2e-'));
-  const { server, url } = await fakeChatGptServer();
+  const { server, url } = await fakeChatGptServer({ hasProjectInitially: true });
   const env = {
     ...process.env,
     GPT_PRO_HOME: home,
@@ -276,8 +328,66 @@ test('CLI ask progress suppresses elapsed-only noise on stderr', async (t) => {
 
     assert.match(stdout, /^OK/m);
     const statusLines = stderr.split('\n').filter((line) => line.startsWith('status: '));
-    assert.equal(statusLines.length, 1, stderr);
-    assert.match(statusLines[0], /phase=waiting_answer/);
+    assert.ok(statusLines.length >= 1, stderr);
+    assert.ok(statusLines.length <= 4, stderr);
+    assert.ok(statusLines.some((line) => /phase=waiting_answer/.test(line)), stderr);
+    assert.ok(statusLines.every((line) => !/ elapsed=\d+s$/.test(line)), stderr);
+    assert.equal(new Set(statusLines).size, statusLines.length, stderr);
+  } finally {
+    await execFile(process.execPath, [cliPath, 'stop'], { env, timeout: 10_000 }).catch(() => {});
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('background ask creates the first Chrome page without making Chrome frontmost on macOS', async (t) => {
+  if (process.platform !== 'darwin') {
+    t.skip('macOS focus ownership is only testable on darwin');
+    return;
+  }
+  if (!await pathExists('/Applications/Google Chrome.app')) {
+    t.skip('Google Chrome is not installed');
+    return;
+  }
+
+  let before;
+  try {
+    before = await frontmostApplication();
+  } catch (error) {
+    t.skip(`frontmost app probe unavailable: ${error.message}`);
+    return;
+  }
+  if (isChromeApplicationName(before)) {
+    t.skip('frontmost app is already Chrome, so Chrome focus stealing cannot be distinguished');
+    return;
+  }
+
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-focus-e2e-'));
+  const { server, url } = await fakeChatGptServer();
+  const env = {
+    ...process.env,
+    GPT_PRO_HOME: home,
+    GPT_PRO_CHATGPT_URL: url,
+    GPT_PRO_BROWSER_MODE: 'background',
+    GPT_PRO_OPERATION_TIMEOUT_MS: '15000',
+    GPT_PRO_IDLE_MS: '60000',
+    GPT_PRO_PROGRESS: '0',
+  };
+
+  try {
+    const result = await runCliWithFrontmostSamples([
+      'ask',
+      '--session',
+      'new',
+      '--timeout',
+      '15000',
+      '--',
+      'focus-safe background launch',
+    ], { env, timeoutMs: 35_000 });
+
+    assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /^OK/m);
+    const chromeSamples = result.samples.filter(isChromeApplicationName);
+    assert.deepEqual(chromeSamples, [], `Chrome became frontmost during background ask. samples=${result.samples.join(' -> ')}`);
   } finally {
     await execFile(process.execPath, [cliPath, 'stop'], { env, timeout: 10_000 }).catch(() => {});
     await new Promise((resolve) => server.close(resolve));

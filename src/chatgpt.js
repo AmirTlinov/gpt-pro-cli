@@ -1181,7 +1181,13 @@ async function createProject(page, projectName) {
 
   const nameInput = page.locator('input[name="projectName"], #project-name').first();
   await nameInput.waitFor({ state: 'visible', timeout: 10_000 });
-  await nameInput.fill(projectName);
+  await nameInput.evaluate((element, value) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    if (setter) setter.call(element, value);
+    else element.value = value;
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+  }, projectName);
   await clickCreateProject(page);
 
   await page.waitForURL((url) => /\/g\/[^/]+\/project/.test(url.pathname), { timeout: 30_000 }).catch(() => {});
@@ -1414,6 +1420,78 @@ export async function waitForLoggedIn(page, timeoutMs = 10 * 60_000, options = {
 }
 
 async function setComposerText(page, locator, text) {
+  const domInserted = await page.evaluate(({ selectors, value }) => {
+    function visible(node) {
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    }
+
+    const element = selectors
+      .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+      .find(visible);
+    if (!element) return false;
+
+    function nativeValueSetter(node) {
+      const proto = node instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : node instanceof HTMLInputElement
+          ? HTMLInputElement.prototype
+          : null;
+      return proto ? Object.getOwnPropertyDescriptor(proto, 'value')?.set : null;
+    }
+
+    if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
+      const setter = nativeValueSetter(element);
+      if (setter) setter.call(element, value);
+      else element.value = value;
+    } else {
+      element.textContent = value;
+    }
+    element.dispatchEvent(new InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertText',
+      data: value,
+    }));
+    element.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      inputType: 'insertText',
+      data: value,
+    }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }, { selectors: COMPOSER_SELECTORS, value: text }).catch(() => false);
+  if (domInserted) return;
+
+  const plainDomInserted = await page.evaluate(({ selectors, value }) => {
+    function visible(node) {
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    }
+
+    const element = selectors
+      .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+      .find(visible);
+    if (!element) return false;
+
+    if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
+      element.value = value;
+    } else {
+      element.innerText = value;
+      element.textContent = value;
+    }
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }, { selectors: COMPOSER_SELECTORS, value: text }).catch(() => false);
+  if (plainDomInserted) return;
+
+  if (process.env.GPT_PRO_ALLOW_FOCUSED_INPUT !== '1') {
+    throw new Error('Composer did not accept DOM text insertion; focused keyboard fallback is disabled to avoid stealing desktop focus. Set GPT_PRO_ALLOW_FOCUSED_INPUT=1 to opt into the legacy focused fallback.');
+  }
+
   try {
     await locator.evaluate((element, value) => {
       element.scrollIntoView({ block: 'center', inline: 'nearest' });
@@ -1459,12 +1537,15 @@ export async function clickSend(page) {
     const button = page.locator(selector).first();
     try {
       if (await button.count() > 0 && await button.isEnabled({ timeout: 1000 })) {
-        await button.click({ force: true });
+        await button.evaluate((element) => element.click());
         return;
       }
     } catch {
       // Try the next selector, then fall back to keyboard.
     }
+  }
+  if (process.env.GPT_PRO_ALLOW_FOCUSED_INPUT !== '1') {
+    throw new Error('No DOM-clickable ChatGPT send button was found; focused keyboard fallback is disabled to avoid stealing desktop focus. Set GPT_PRO_ALLOW_FOCUSED_INPUT=1 to opt into the legacy focused fallback.');
   }
   await page.keyboard.press('Enter');
 }
@@ -1493,8 +1574,19 @@ async function isUserPromptVisible(page, expected) {
   }, expected);
 }
 
-async function composerText(locator) {
-  return locator.evaluate((element) => (element.innerText || element.textContent || element.value || '').replace(/\s+/g, ' ').trim());
+async function composerText(page) {
+  return page.evaluate((selectors) => {
+    function visible(node) {
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    }
+
+    const element = selectors
+      .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+      .find(visible);
+    return (element?.innerText || element?.textContent || element?.value || '').replace(/\s+/g, ' ').trim();
+  }, COMPOSER_SELECTORS);
 }
 
 async function waitForPromptAccepted(page, composer, prompt, timeoutMs = 8000) {
@@ -1507,7 +1599,7 @@ async function waitForPromptAccepted(page, composer, prompt, timeoutMs = 8000) {
     await assertNoChatGptBlocker(page);
     if (await isUserPromptVisible(page, probe)) return true;
     if (await isGenerating(page)) return true;
-    const current = await composerText(composer).catch(() => '');
+    const current = await composerText(page).catch(() => '');
     if (shortProbe && !current.includes(shortProbe) && !current.replace(/\s+/g, '').includes(shortProbeCompact)) return true;
     await page.waitForTimeout(500);
   }
@@ -1520,8 +1612,7 @@ export async function submitPrompt(page, { prompt, attachmentPath, githubReposit
   let composer = await waitForComposer(page);
   await composer.evaluate((element) => {
     element.scrollIntoView({ block: 'center', inline: 'nearest' });
-    element.focus();
-  });
+  }).catch(() => {});
   let githubConnector = { requested: githubRepositories, selected: [] };
   try {
     githubConnector = await attachGitHubRepositories(page, githubRepositories);
@@ -1563,6 +1654,14 @@ export async function submitPrompt(page, { prompt, attachmentPath, githubReposit
     await assertNoChatGptBlocker(page);
     await clickSend(page);
     if (!await waitForPromptAccepted(page, composer, prompt, 5000)) {
+      if (process.env.GPT_PRO_ALLOW_FOCUSED_INPUT !== '1') {
+        await assertNoChatGptBlocker(page);
+        await clickSend(page);
+        if (!await waitForPromptAccepted(page, composer, prompt, 5000)) {
+          throw new Error('Prompt was not submitted to ChatGPT without focused keyboard fallback');
+        }
+        return { githubConnector };
+      }
       await composer.evaluate((element) => {
         element.scrollIntoView({ block: 'center', inline: 'nearest' });
         element.focus();

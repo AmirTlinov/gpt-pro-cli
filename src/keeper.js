@@ -49,6 +49,15 @@ let browserQueue = Promise.resolve();
 let browserQueueDepth = 0;
 let currentTask = null;
 const reservedDownloadTargets = new Set();
+const FOCUS_GUARD_SETTLE_MS = 80;
+let focusGuard = {
+  enabled: false,
+  active: false,
+  previousApp: null,
+  previousPid: null,
+  pid: null,
+  error: null,
+};
 
 function shouldUseNoStartupWindow() {
   return mode === 'background'
@@ -57,10 +66,134 @@ function shouldUseNoStartupWindow() {
     && appSettings.macosNoStartupWindow;
 }
 
+function shouldUseFocusGuard() {
+  return mode === 'background'
+    && process.platform === 'darwin'
+    && appSettings.macosFocusGuard;
+}
+
+function isChromeAppName(value) {
+  return /^(Google Chrome|Chromium)$/i.test(String(value || '').trim());
+}
+
+async function frontmostApplicationSnapshot() {
+  const { stdout } = await execFile('osascript', [
+    '-e',
+    'tell application "System Events" to tell first application process whose frontmost is true to get {name, unix id}',
+  ], { timeout: 1000 });
+  const raw = stdout.trim();
+  const match = raw.match(/^(.+),\s*(\d+)$/);
+  if (!match) return { name: raw, pid: null };
+  return { name: match[1].trim(), pid: Number.parseInt(match[2], 10) };
+}
+
+async function startFocusGuard() {
+  if (!shouldUseFocusGuard() || focusGuard.active) return;
+  try {
+    const previous = await frontmostApplicationSnapshot();
+    const previousApp = previous.name;
+    const previousPid = previous.pid;
+    if (!previousApp || isChromeAppName(previousApp)) {
+      focusGuard = {
+        enabled: appSettings.macosFocusGuard,
+        active: false,
+        previousApp: previousApp || null,
+        previousPid: previousPid || null,
+        pid: null,
+        error: previousApp ? 'frontmost app is already Chrome' : 'frontmost app is unknown',
+      };
+      return;
+    }
+
+    const script = `
+on run argv
+  set lastApp to item 1 of argv
+  set lastPid to (item 2 of argv) as integer
+  repeat
+    try
+      tell application "System Events"
+        set frontProc to first application process whose frontmost is true
+        set frontApp to name of frontProc
+        set frontPid to unix id of frontProc
+        if (frontApp is "Google Chrome" or frontApp is "Chromium") then
+          if lastPid is not 0 then
+            try
+              set frontmost of first application process whose unix id is lastPid to true
+            on error
+              set visible of frontProc to false
+            end try
+          else
+            set visible of frontProc to false
+          end if
+        else
+          set lastApp to frontApp
+          set lastPid to frontPid
+        end if
+      end tell
+    end try
+    delay 0.005
+  end repeat
+end run
+`;
+    const child = spawn('/usr/bin/osascript', ['-e', script, previousApp, String(previousPid || 0)], { stdio: 'ignore' });
+    child.unref?.();
+    focusGuard = {
+      enabled: true,
+      active: true,
+      previousApp,
+      previousPid: previousPid || null,
+      pid: child.pid || null,
+      error: null,
+      process: child,
+    };
+    child.once('exit', (code, signal) => {
+      if (focusGuard.process === child) {
+        focusGuard = {
+          enabled: true,
+          active: false,
+          previousApp,
+          previousPid: previousPid || null,
+          pid: null,
+          error: code || signal ? `focus guard exited code=${code ?? 'null'} signal=${signal ?? 'null'}` : null,
+        };
+      }
+    });
+    await new Promise((resolve) => setTimeout(resolve, FOCUS_GUARD_SETTLE_MS));
+  } catch (error) {
+    focusGuard = {
+      enabled: appSettings.macosFocusGuard,
+      active: false,
+      previousApp: null,
+      previousPid: null,
+      pid: null,
+      error: error.message,
+    };
+  }
+}
+
+async function stopFocusGuard() {
+  const child = focusGuard.process;
+  if (!child) return;
+  focusGuard = {
+    enabled: true,
+    active: false,
+    previousApp: focusGuard.previousApp,
+    previousPid: focusGuard.previousPid,
+    pid: null,
+    error: null,
+  };
+  try {
+    child.kill('SIGTERM');
+  } catch {
+    // The guard may have already exited.
+  }
+}
+
 function initialBackgroundWindowState() {
   return {
     attempted: false,
     parked: false,
+    pageCreation: null,
     windowId: null,
     bounds: null,
     error: null,
@@ -74,6 +207,25 @@ let backgroundWindow = initialBackgroundWindowState();
 
 function resetBackgroundWindow() {
   backgroundWindow = initialBackgroundWindowState();
+}
+
+function backgroundWindowPatch(patch) {
+  backgroundWindow = {
+    ...backgroundWindow,
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function focusGuardStatus() {
+  return {
+    enabled: Boolean(focusGuard.enabled || shouldUseFocusGuard()),
+    active: Boolean(focusGuard.active),
+    previousApp: focusGuard.previousApp || null,
+    previousPid: focusGuard.previousPid || null,
+    pid: focusGuard.pid || null,
+    error: focusGuard.error || null,
+  };
 }
 
 function normalizeWindowBounds(bounds) {
@@ -106,8 +258,10 @@ async function runBrowserTask(task) {
   });
   await previous.catch(() => {});
   try {
+    await startFocusGuard();
     return await task();
   } finally {
+    await stopFocusGuard();
     browserQueueDepth = Math.max(0, browserQueueDepth - 1);
     touchIdle();
     release();
@@ -280,12 +434,10 @@ async function parkBackgroundWindow(page) {
   if (mode !== 'background' || backgroundWindow.parked) return;
   let session = null;
   try {
-    backgroundWindow = {
-      ...backgroundWindow,
+    backgroundWindowPatch({
       attempted: true,
       error: null,
-      updatedAt: new Date().toISOString(),
-    };
+    });
     session = await context.newCDPSession(page);
     const { windowId } = await session.send('Browser.getWindowForTarget');
     await session.send('Browser.setWindowBounds', {
@@ -312,32 +464,82 @@ async function parkBackgroundWindow(page) {
     }));
     const parked = windowIsParked(minimizedBounds) || windowIsParked(offscreenBounds);
     const bounds = minimizedBounds || offscreenBounds;
-    backgroundWindow = {
-      ...backgroundWindow,
+    backgroundWindowPatch({
       windowId,
       bounds,
       parked,
       error: parked ? null : 'Chrome window bounds did not confirm minimized/offscreen parking',
-      updatedAt: new Date().toISOString(),
-    };
+    });
     if (backgroundWindow.strict && !parked) {
       const parkingError = new Error(`Background Chrome window could not be parked before prompt submission. bounds=${JSON.stringify(bounds)}`);
       parkingError.code = 'BACKGROUND_PARKING_FAILED';
       throw parkingError;
     }
   } catch (error) {
-    backgroundWindow = {
-      ...backgroundWindow,
+    backgroundWindowPatch({
       attempted: true,
       parked: false,
       error: error.message,
-      updatedAt: new Date().toISOString(),
-    };
+    });
     if (backgroundWindow.strict) {
       if (error.code === 'BACKGROUND_PARKING_FAILED') throw error;
       throw new Error(`Background Chrome window could not be parked before prompt submission: ${error.message}`);
     }
     // Launch flags still keep this best-effort background mode usable.
+  } finally {
+    await session?.detach?.().catch(() => {});
+  }
+}
+
+async function waitForContextPage(targetId = '') {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const pages = context.pages().filter((page) => !page.isClosed());
+    if (pages.length > 0) return pages[pages.length - 1];
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Chrome DevTools created a background target but Playwright did not expose its page${targetId ? ` targetId=${targetId}` : ''}`);
+}
+
+async function createBrowserPage() {
+  if (!(mode === 'background' && shouldUseNoStartupWindow())) {
+    return context.newPage();
+  }
+
+  let session = null;
+  try {
+    session = await browser.newBrowserCDPSession();
+    const created = await session.send('Target.createTarget', {
+      url: 'about:blank',
+      newWindow: true,
+      background: true,
+      left: -24000,
+      top: -24000,
+      width: 1440,
+      height: 1000,
+    });
+    backgroundWindowPatch({
+      pageCreation: {
+        method: 'Target.createTarget',
+        targetId: created.targetId || null,
+        initialUrl: 'about:blank',
+        background: true,
+        newWindow: true,
+      },
+      error: null,
+    });
+    return await waitForContextPage(created.targetId || '');
+  } catch (error) {
+    backgroundWindowPatch({
+      pageCreation: {
+        method: 'Target.createTarget',
+        background: true,
+        newWindow: true,
+        error: error.message,
+      },
+      error: error.message,
+    });
+    throw new Error(`Could not create a non-focusing background Chrome page: ${error.message}. Set GPT_PRO_MACOS_NO_STARTUP_WINDOW=0 to opt into legacy visible-window startup.`);
   } finally {
     await session?.detach?.().catch(() => {});
   }
@@ -362,7 +564,7 @@ async function browserPage() {
     await parkBackgroundWindow(activePage);
     return activePage;
   }
-  activePage = context.pages()[0] || await context.newPage();
+  activePage = context.pages()[0] || await createBrowserPage();
   await activePage.setViewportSize({ width: 1440, height: 1000 }).catch(() => {});
   await parkBackgroundWindow(activePage);
   return activePage;
@@ -417,14 +619,15 @@ async function keeperStatus() {
     }));
   }
   return {
-    ok: browserAlive,
-    error: browserAlive ? undefined : 'browser backing process is not reachable',
+    ok: true,
+    error: undefined,
     pid: process.pid,
     mode,
     profileDir: rootPaths.profileDir,
     browserPid: chromeProcess?.pid || null,
     browserAlive,
     backgroundWindow,
+    focusGuard: focusGuardStatus(),
     queueDepth: browserQueueDepth,
     task: currentTask,
     page: pageStatus,
@@ -443,6 +646,7 @@ function touchIdle() {
 
 async function shutdown(exitCode = 0) {
   if (idleTimer) clearTimeout(idleTimer);
+  await stopFocusGuard();
   if (server) {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -466,15 +670,15 @@ async function handle(req, res) {
 
     if (req.method === 'GET' && req.url === '/health') {
       const browserAlive = browserBackingAlive();
-      return json(res, browserAlive ? 200 : 503, {
-        ok: browserAlive,
-        error: browserAlive ? undefined : 'browser backing process is not reachable',
+      return json(res, 200, {
+        ok: true,
         pid: process.pid,
         mode,
         profileDir: rootPaths.profileDir,
         browserPid: chromeProcess?.pid || null,
         browserAlive,
         backgroundWindow,
+        focusGuard: focusGuardStatus(),
         queueDepth: browserQueueDepth,
         task: currentTask,
       });
@@ -681,7 +885,6 @@ async function handle(req, res) {
 
 async function main() {
   await ensureDir(rootPaths.runtimeDir);
-  await browserPage();
   server = http.createServer(handle);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address();
