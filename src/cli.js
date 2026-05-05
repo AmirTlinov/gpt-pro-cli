@@ -29,6 +29,7 @@ function usage() {
   return `gpt-pro
 
 Commands:
+  gpt-pro --version
   gpt-pro doctor
   gpt-pro login
   gpt-pro sessions [--project CLI_QUESTIONS]
@@ -612,6 +613,10 @@ async function main() {
   const [command, ...rest] = process.argv.slice(2);
   if (!command || command === '--help' || command === '-h') {
     console.log(usage());
+    return;
+  }
+  if (command === '--version' || command === '-v' || command === 'version') {
+    console.log(PACKAGE_VERSION);
     return;
   }
   if (command === 'doctor') return doctor();

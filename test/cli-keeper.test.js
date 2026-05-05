@@ -11,6 +11,15 @@ import { pathExists } from '../src/fsx.js';
 const execFile = promisify(execFileCallback);
 const cliPath = path.resolve('src/cli.js');
 
+test('CLI exposes quiet version flags', async () => {
+  const expected = JSON.parse(await fs.readFile(path.resolve('package.json'), 'utf8')).version;
+  for (const flag of ['--version', '-v', 'version']) {
+    const { stdout, stderr } = await execFile(process.execPath, [cliPath, flag], { timeout: 10_000 });
+    assert.equal(stderr, '');
+    assert.equal(stdout.trim(), expected);
+  }
+});
+
 async function profileProcessLines(profileDir) {
   const { stdout } = await execFile('ps', ['-axo', 'pid=,command=']);
   return stdout
