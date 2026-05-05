@@ -10,13 +10,13 @@ answer plus files on disk. It is a browser bridge, not an OpenAI API client.
 ## Install
 
 ```sh
-npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.16/gpt-pro-cli-0.1.16.tgz
+npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.17/gpt-pro-cli-0.1.17.tgz
 ```
 
 Or install the same release from the Git tag:
 
 ```sh
-npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.16
+npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.17
 ```
 
 For local development:
@@ -60,9 +60,9 @@ printf '%s\n' "Final pressure" | gpt-pro-sidecar flagship <run-dir>
 
 `gpt-pro-sidecar start` returns a run directory immediately and detaches a real
 worker process, so the browser action survives after the calling agent's shell
-turn exits. `wait` blocks until completion and prints status, stdout, stderr, the
-answer body, and a compact receipt summary, so agents do not need to poll and
-then manually `cat` files. `status` is fail-closed: a dead worker without
+turn exits. `wait` blocks until completion and prints compact status fields by
+default; use `wait --show` or `show` when you need stdout/stderr plus the full
+answer body. `status` is fail-closed: a dead worker without
 `exit_code` is reported as `FAILED`, not as a forever-pending run, and completed
 runs include answer/receipt/url fields inline. Receipt warnings make sidecar
 runs exit non-zero, so agents do not accidentally treat missing downloads,
@@ -88,13 +88,16 @@ the resolved repo for `flagship`, so a background review can continue in the sam
 thread without re-deriving the repo manually.
 
 The repository should already be visible/indexed to ChatGPT's GitHub connector.
-Current ChatGPT UI may expose GitHub as a tool-only pill instead of a per-repo
-picker; in that case the receipt records
-`githubConnector.repositorySelection: "prompt-scoped"` and keeps the run clean
-only after the GitHub tool was actually selected. If even the GitHub tool cannot
-be selected, the CLI still sends the connector-required prompt but records a
-warning in `receipt.json`. Treat that as "prompt-enforced, UI selection
-unconfirmed", not as silent success.
+For each requested repo the CLI opens the GitHub repo picker, searches the exact
+`owner/repo` when needed, and records whether the repo was already checked or
+temporarily checked by this run. Temporary checks are cleaned up after the
+answer; repos that were checked before the run are left checked.
+
+A clean receipt requires deterministic repo-picker confirmation. A GitHub
+tool-only pill or unmeasurable picker state is not accepted as clean repo
+grounding: the CLI still sends the connector-required prompt, but the receipt is
+`warn` and direct `gpt-pro ask` exits `10`. Treat that as usable-but-unproven,
+not as silent success.
 
 ## Files
 

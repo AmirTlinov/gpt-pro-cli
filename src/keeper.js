@@ -11,6 +11,7 @@ import { downloadAnswerArtifacts } from './downloads.js';
 import {
   downloadTarget,
   assistantMessageCount,
+  cleanupGitHubRepositorySelections,
   extractLatestAnswer,
   extractVisibleReasoning,
   openOrCreateProject,
@@ -299,21 +300,38 @@ async function handle(req, res) {
             attachmentPath: body.attachmentPath,
             githubRepositories: body.githubRepositories || [],
           });
-          const answer = await waitForAnswerStable(page, body.timeoutMs || appSettings.operationTimeoutMs, {
-            prompt: body.prompt,
-            previousAnswer,
-            previousAssistantCount,
-          });
-          await Promise.allSettled(downloadSaves);
-          const reasoning = await extractVisibleReasoning(page);
-          const answerDownloads = body.downloadDir
-            ? await downloadAnswerArtifacts(page, {
+          let githubConnector = promptSubmission.githubConnector;
+          let answer;
+          let reasoning;
+          let answerDownloads;
+          try {
+            answer = await waitForAnswerStable(page, body.timeoutMs || appSettings.operationTimeoutMs, {
               prompt: body.prompt,
-              downloadDir: body.downloadDir,
-              timeoutMs: appSettings.downloadTimeoutMs,
-              maxBytes: appSettings.maxDownloadBytes,
-            })
-            : { links: [], downloads: [], errors: [] };
+              previousAnswer,
+              previousAssistantCount,
+            });
+            await Promise.allSettled(downloadSaves);
+            reasoning = await extractVisibleReasoning(page);
+            answerDownloads = body.downloadDir
+              ? await downloadAnswerArtifacts(page, {
+                prompt: body.prompt,
+                downloadDir: body.downloadDir,
+                timeoutMs: appSettings.downloadTimeoutMs,
+                maxBytes: appSettings.maxDownloadBytes,
+              })
+              : { links: [], downloads: [], errors: [] };
+          } finally {
+            githubConnector = await cleanupGitHubRepositorySelections(page, githubConnector).catch((error) => ({
+              ...githubConnector,
+              cleanup: {
+                attempted: true,
+                status: 'warn',
+                cleaned: [],
+                skipped: githubConnector?.cleanup?.skipped || [],
+                errors: [{ error: error.message }],
+              },
+            }));
+          }
           return json(res, 200, {
             ok: true,
             answer,
@@ -324,7 +342,7 @@ async function handle(req, res) {
             downloadErrors: answerDownloads.errors,
             url: page.url(),
             project,
-            githubConnector: promptSubmission.githubConnector,
+            githubConnector,
             elapsedMs: Date.now() - startedAt,
             title: await page.title().catch(() => ''),
             latestVisibleAnswer: await extractLatestAnswer(page).catch(() => answer),

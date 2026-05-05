@@ -165,6 +165,45 @@ async function clickVisibleControlByText(page, labels) {
   }, labels);
 }
 
+async function clickVisibleControlByTextWithPointer(page, labels) {
+  function normalized(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim();
+  }
+
+  const baseSelectors = [
+    'button',
+    '[role="button"]',
+    '[role="menuitem"]',
+    '[role="menuitemradio"]',
+    '[role="menuitemcheckbox"]',
+    '[role="option"]',
+    'a',
+    'div',
+  ];
+  for (const label of labels) {
+    for (const base of baseSelectors) {
+      const selector = `${base}:has-text(${JSON.stringify(label)})`;
+      const matches = page.locator(selector);
+      const count = Math.min(await matches.count().catch(() => 0), 20);
+      for (let index = count - 1; index >= 0; index -= 1) {
+        const locator = matches.nth(index);
+        try {
+          if (!await locator.isVisible({ timeout: 250 })) continue;
+          const raw = await locator.evaluate((node) => node.innerText || node.textContent || node.getAttribute('aria-label') || '');
+          const text = normalized(raw);
+          const lines = String(raw || '').split('\n').map(normalized).filter(Boolean);
+          if (text !== label && !lines.includes(label)) continue;
+          await locator.click({ force: true });
+          return true;
+        } catch {
+          // Try the next candidate.
+        }
+      }
+    }
+  }
+  return false;
+}
+
 async function clickVisibleNodeByLineText(page, labels) {
   return page.evaluate((wantedLabels) => {
     function normalized(value) {
@@ -222,11 +261,15 @@ async function clickFirstVisible(page, selectors) {
 
 async function fillFirstVisibleInput(page, selectors, value) {
   for (const selector of selectors) {
-    const input = page.locator(selector).first();
+    const matches = page.locator(selector);
     try {
-      if (await input.count() > 0 && await input.isVisible({ timeout: 500 })) {
-        await input.fill(value);
-        return true;
+      const count = Math.min(await matches.count(), 25);
+      for (let index = 0; index < count; index += 1) {
+        const input = matches.nth(index);
+        if (await input.isVisible({ timeout: 200 })) {
+          await input.fill(value);
+          return true;
+        }
       }
     } catch {
       // Try the next selector.
@@ -244,9 +287,12 @@ async function ensureUsableViewport(page) {
 
 async function hasFirstVisible(page, selectors, timeoutMs = 500) {
   for (const selector of selectors) {
-    const control = page.locator(selector).first();
+    const matches = page.locator(selector);
     try {
-      if (await control.count() > 0 && await control.isVisible({ timeout: timeoutMs })) return true;
+      const count = Math.min(await matches.count(), 25);
+      for (let index = 0; index < count; index += 1) {
+        if (await matches.nth(index).isVisible({ timeout: Math.min(timeoutMs, 250) })) return true;
+      }
     } catch {
       // Try the next selector.
     }
@@ -280,45 +326,352 @@ async function isGitHubConnectorActive(page) {
   });
 }
 
+async function removeGitHubConnectorTool(page) {
+  return page.evaluate(() => {
+    function normalized(value) {
+      return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    }
+
+    function visible(node) {
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    }
+
+    const roots = Array.from(document.querySelectorAll('[data-testid="composer-footer-actions"], form'));
+    for (const root of roots) {
+      const buttons = Array.from(root.querySelectorAll('button,[role="button"]'));
+      const button = buttons.find((candidate) => {
+        if (!visible(candidate)) return false;
+        const aria = normalized(candidate.getAttribute('aria-label'));
+        return aria.includes('github') && (aria.includes('remove') || aria.includes('удал'));
+      });
+      if (!button) continue;
+      button.scrollIntoView({ block: 'center', inline: 'center' });
+      button.click();
+      return true;
+    }
+    return false;
+  });
+}
+
 async function openGitHubConnector(page) {
+  if (await hasFirstVisible(page, GITHUB_REPO_SEARCH_SELECTORS, 300)) return true;
+
+  const openPickerFromActivePill = async () => {
+    const selectors = [
+      '[data-testid="composer-footer-actions"] button.__composer-pill:has-text("GitHub")',
+      'button.__composer-pill:has-text("GitHub")',
+      '[data-testid="composer-footer-actions"] button:has-text("GitHub")',
+    ];
+    for (const selector of selectors) {
+      const matches = page.locator(selector);
+      const count = Math.min(await matches.count().catch(() => 0), 5);
+      for (let index = count - 1; index >= 0; index -= 1) {
+        const button = matches.nth(index);
+        try {
+          if (!await button.isVisible({ timeout: 250 })) continue;
+          const aria = String(await button.getAttribute('aria-label').catch(() => '') || '').toLowerCase();
+          if (aria.includes('remove') || aria.includes('удал')) continue;
+          await button.click({ force: true });
+          return true;
+        } catch {
+          // Try the next candidate.
+        }
+      }
+    }
+    return false;
+  };
+
+  const ensurePicker = async () => {
+    if (await hasFirstVisible(page, GITHUB_REPO_SEARCH_SELECTORS, 700)) return true;
+    if (await openPickerFromActivePill()) {
+      await page.waitForTimeout(700);
+      if (await hasFirstVisible(page, GITHUB_REPO_SEARCH_SELECTORS, 700)) return true;
+    }
+    return false;
+  };
+
   const clickGitHub = async () => (
-    await clickVisibleControlByText(page, GITHUB_CONNECTOR_LABELS)
+    await clickVisibleControlByTextWithPointer(page, GITHUB_CONNECTOR_LABELS)
+    || await clickVisibleControlByText(page, GITHUB_CONNECTOR_LABELS)
     || await clickVisibleNodeByLineText(page, GITHUB_CONNECTOR_LABELS)
   );
 
   if (await clickGitHub()) {
     await page.waitForTimeout(500);
-    return true;
+    return ensurePicker();
   }
 
   if (await clickFirstVisible(page, TOOL_MENU_SELECTORS)) {
     await page.waitForTimeout(500);
     if (await clickGitHub()) {
       await page.waitForTimeout(500);
-      return true;
+      return ensurePicker();
     }
-    if (await clickVisibleNodeByLineText(page, MORE_TOOLS_LABELS)) {
+    if (await clickVisibleControlByTextWithPointer(page, MORE_TOOLS_LABELS) || await clickVisibleNodeByLineText(page, MORE_TOOLS_LABELS)) {
       await page.waitForTimeout(500);
       if (await clickGitHub()) {
         await page.waitForTimeout(500);
-        return true;
+        return ensurePicker();
       }
     }
     if (await clickVisibleNodeByLineText(page, GITHUB_CONNECTOR_LABELS)) {
       await page.waitForTimeout(500);
-      return true;
+      return ensurePicker();
     }
   }
 
-  return false;
+  return ensurePicker();
+}
+
+async function githubRepositoryRowOperation(page, repository, operation = 'state') {
+  return page.evaluate(({ repository: wantedRepository, operation: wantedOperation }) => {
+    function normalized(value) {
+      return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function visible(node) {
+      if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return style.display !== 'none'
+        && style.visibility !== 'hidden'
+        && rect.width > 0
+        && rect.height > 0;
+    }
+
+    function depth(node) {
+      let current = node;
+      let value = 0;
+      while (current?.parentElement) {
+        value += 1;
+        current = current.parentElement;
+      }
+      return value;
+    }
+
+    function textFor(node) {
+      return normalized(node.innerText || node.textContent || node.getAttribute('aria-label') || '');
+    }
+
+    function matchesRepository(node, repository) {
+      const wanted = normalized(repository);
+      const raw = node.innerText || node.textContent || node.getAttribute('aria-label') || '';
+      const text = normalized(raw);
+      const lines = String(raw || '').split('\n').map(normalized).filter(Boolean);
+      const escaped = wanted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const bounded = new RegExp(`(^|\\s)${escaped}(\\s|$)`);
+      return text === wanted || lines.includes(wanted) || bounded.test(text);
+    }
+
+    function candidateScore(node, repository) {
+      const tag = node.tagName.toLowerCase();
+      const role = String(node.getAttribute('role') || '').toLowerCase();
+      const actionable = tag === 'button'
+        || tag === 'label'
+        || ['button', 'menuitem', 'menuitemradio', 'menuitemcheckbox', 'option', 'checkbox'].includes(role);
+      const raw = node.innerText || node.textContent || node.getAttribute('aria-label') || '';
+      const text = normalized(raw);
+      const lines = String(raw || '').split('\n').map(normalized).filter(Boolean);
+      const exact = text === repository || lines.includes(repository);
+      const rect = node.getBoundingClientRect();
+      return {
+        exact: exact ? 0 : 1,
+        actionable: actionable ? 0 : 1,
+        length: text.length,
+        area: Math.max(1, Math.round(rect.width * rect.height)),
+        depth: -depth(node),
+      };
+    }
+
+    function checkedSignalFromAttributes(node) {
+      const ariaChecked = node.getAttribute('aria-checked');
+      if (ariaChecked === 'true') return { checked: true, source: 'aria-checked' };
+      if (ariaChecked === 'false') return { checked: false, source: 'aria-checked' };
+
+      const ariaSelected = node.getAttribute('aria-selected');
+      if (ariaSelected === 'true') return { checked: true, source: 'aria-selected' };
+      if (ariaSelected === 'false') return { checked: false, source: 'aria-selected' };
+
+      const selected = node.getAttribute('data-selected') || node.getAttribute('data-checked');
+      if (selected === 'true') return { checked: true, source: 'data-selected' };
+      if (selected === 'false') return { checked: false, source: 'data-selected' };
+
+      const state = String(node.getAttribute('data-state') || '').toLowerCase();
+      if (['checked', 'on', 'selected', 'active'].includes(state)) return { checked: true, source: 'data-state' };
+      if (['unchecked', 'off', 'unselected', 'inactive'].includes(state)) return { checked: false, source: 'data-state' };
+
+      if (node instanceof HTMLOptionElement) return { checked: node.selected, source: 'option-selected' };
+
+      return null;
+    }
+
+    function checkedSignal(row) {
+      const input = row.matches('input[type="checkbox"],input[type="radio"]')
+        ? row
+        : row.querySelector('input[type="checkbox"],input[type="radio"]');
+      if (input) return { checked: Boolean(input.checked), source: 'input-checked' };
+
+      const chain = [];
+      let current = row;
+      while (current && current.nodeType === Node.ELEMENT_NODE && current !== document.body) {
+        chain.push(current);
+        const role = String(current.getAttribute('role') || '').toLowerCase();
+        if (['dialog', 'menu', 'listbox'].includes(role)) break;
+        current = current.parentElement;
+      }
+      for (const node of chain) {
+        const signal = checkedSignalFromAttributes(node);
+        if (signal) return signal;
+      }
+
+      const descendants = Array.from(row.querySelectorAll('*')).filter(visible);
+      for (const node of descendants) {
+        const signal = checkedSignalFromAttributes(node);
+        if (signal?.checked === true) return signal;
+      }
+
+      const trailingIcon = Array.from(row.querySelectorAll('.trailing svg, .trailing use, [class*="trailing"] svg, [class*="trailing"] use'))
+        .some((node) => visible(node));
+      if (trailingIcon) return { checked: true, source: 'trailing-selected-icon' };
+
+      const visibleText = textFor(row);
+      if (/^[✓✔☑]\s*/.test(visibleText) || /\b(selected|checked|выбран|выбрано|отмечен|добавлен)\b/i.test(visibleText)) {
+        return { checked: true, source: 'visible-selected-text' };
+      }
+
+      const role = String(row.getAttribute('role') || '').toLowerCase();
+      if (['menuitem', 'menuitemradio', 'menuitemcheckbox', 'option'].includes(role)) {
+        return { checked: false, source: 'no-selected-marker' };
+      }
+
+      return { checked: null, source: 'unknown' };
+    }
+
+    function findRow(repository) {
+      function searchInputLike(node) {
+        const placeholder = normalized(node.getAttribute('placeholder')).toLowerCase();
+        const type = normalized(node.getAttribute('type')).toLowerCase();
+        return type === 'search'
+          || placeholder.includes('repo')
+          || placeholder.includes('репозитор')
+          || placeholder.includes('поиск');
+      }
+
+      function pickerRoots() {
+        const inputs = Array.from(document.querySelectorAll('input'))
+          .filter((node) => visible(node) && searchInputLike(node));
+        const roots = inputs
+          .map((input) => input.closest('[role="dialog"],[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper]') || input.parentElement)
+          .filter(Boolean);
+        return roots.filter((root, index, all) => all.indexOf(root) === index);
+      }
+
+      const selectors = [
+        'button',
+        'label',
+        '[role="button"]',
+        '[role="menuitem"]',
+        '[role="menuitemradio"]',
+        '[role="menuitemcheckbox"]',
+        '[role="option"]',
+        '[role="checkbox"]',
+        'li',
+        'div',
+      ].join(',');
+      const roots = pickerRoots();
+      if (roots.length === 0) return null;
+      const nodes = roots.flatMap((root) => Array.from(root.querySelectorAll(selectors)))
+        .filter((node) => visible(node) && matchesRepository(node, repository));
+      nodes.sort((a, b) => {
+        const left = candidateScore(a, repository);
+        const right = candidateScore(b, repository);
+        return left.exact - right.exact
+          || left.actionable - right.actionable
+          || left.length - right.length
+          || left.area - right.area
+          || left.depth - right.depth;
+      });
+      return nodes[0] || null;
+    }
+
+    const row = findRow(wantedRepository);
+    if (!row) {
+      return {
+        found: false,
+        repository: wantedRepository,
+        checked: null,
+        checkedSource: 'not-found',
+      };
+    }
+
+    const before = checkedSignal(row);
+    if (wantedOperation === 'click') {
+      row.scrollIntoView({ block: 'center', inline: 'center' });
+      row.click();
+    }
+
+    return {
+      found: true,
+      repository: wantedRepository,
+      checked: before.checked,
+      checkedSource: before.source,
+      text: textFor(row).slice(0, 300),
+      role: row.getAttribute('role') || '',
+      tag: row.tagName.toLowerCase(),
+    };
+  }, { repository, operation });
+}
+
+async function searchGitHubRepository(page, repository) {
+  return fillFirstVisibleInput(page, GITHUB_REPO_SEARCH_SELECTORS, repository);
+}
+
+async function closeGitHubConnectorPicker(page) {
+  await page.keyboard.press('Escape').catch(() => {});
+  await page.waitForTimeout(250);
 }
 
 async function selectGitHubRepository(page, repository, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs;
   let searched = false;
   while (Date.now() < deadline) {
-    if (await clickVisibleNodeByLineText(page, [repository])) return true;
-    if (!searched && await fillFirstVisibleInput(page, GITHUB_REPO_SEARCH_SELECTORS, repository)) {
+    const row = await githubRepositoryRowOperation(page, repository, 'state');
+    if (row.found) {
+      if (row.checked === true) {
+        return {
+          repository,
+          selected: true,
+          state: 'preexisting',
+          searched,
+          checkedSource: row.checkedSource,
+        };
+      }
+      if (!searched && await searchGitHubRepository(page, repository)) {
+        searched = true;
+        await page.waitForTimeout(700);
+        continue;
+      }
+      if (row.checked === false) {
+        await githubRepositoryRowOperation(page, repository, 'click');
+        await page.waitForTimeout(500);
+        const after = await githubRepositoryRowOperation(page, repository, 'state');
+        if (after.found && after.checked === true) {
+          return {
+            repository,
+            selected: true,
+            state: 'temporary-selected',
+            searched,
+            checkedSource: after.checkedSource,
+          };
+        }
+        throw new Error(`GitHub repository "${repository}" was clicked but did not become checked in the ChatGPT connector.`);
+      }
+      throw new Error(`GitHub repository "${repository}" is visible, but its checked state could not be determined safely.`);
+    }
+
+    if (!searched && await searchGitHubRepository(page, repository)) {
       searched = true;
       await page.waitForTimeout(700);
       continue;
@@ -332,51 +685,192 @@ export async function attachGitHubRepositories(page, repositories = []) {
   const requested = [...new Set((repositories || []).map((repo) => String(repo || '').trim()).filter(Boolean))];
   if (requested.length === 0) return { requested: [], selected: [] };
 
-  const selected = [];
-  let toolSelected = false;
-  let promptScoped = false;
-  for (const repository of requested) {
-    if (!await openGitHubConnector(page)) {
-      throw new Error('ChatGPT GitHub connector control was not found. Configure/connect GitHub in ChatGPT, then retry.');
-    }
-    toolSelected = await isGitHubConnectorActive(page) || toolSelected;
-    if (await clickVisibleNodeByLineText(page, [repository])) {
-      selected.push(repository);
-      toolSelected = true;
-      await page.keyboard.press('Escape').catch(() => {});
-      await page.waitForTimeout(250);
-      continue;
-    }
-    if (toolSelected && !await hasFirstVisible(page, GITHUB_REPO_SEARCH_SELECTORS, 1500)) {
-      promptScoped = true;
-      await page.keyboard.press('Escape').catch(() => {});
-      await page.waitForTimeout(250);
-      continue;
-    }
-    if (!await selectGitHubRepository(page, repository)) {
-      toolSelected = await isGitHubConnectorActive(page) || toolSelected;
-      if (toolSelected) {
-        promptScoped = true;
-        await page.keyboard.press('Escape').catch(() => {});
-        await page.waitForTimeout(250);
-        continue;
-      }
-      throw new Error(`GitHub repository "${repository}" was not found in the ChatGPT connector. Check that it is indexed and visible in ChatGPT.`);
-    }
-    selected.push(repository);
-    toolSelected = true;
-    await page.keyboard.press('Escape').catch(() => {});
-    await page.waitForTimeout(250);
+  const composer = await waitForComposer(page, 1000).catch(() => null);
+  if (composer) {
+    await composer.evaluate((element) => {
+      element.scrollIntoView({ block: 'center', inline: 'nearest' });
+      element.focus();
+    }).catch(() => {});
   }
+  await page.keyboard.press('Escape').catch(() => {});
+  await page.waitForTimeout(100);
+  const selected = [];
+  const repositoryStates = [];
+  const toolPreexisting = await isGitHubConnectorActive(page).catch(() => false);
+  let toolSelected = toolPreexisting;
 
-  return {
+  const connectorState = () => ({
     requested,
     selected,
     toolSelected,
-    repositorySelection: promptScoped
-      ? selected.length > 0 ? 'mixed' : 'prompt-scoped'
-      : 'repo-picker',
+    toolPreexisting,
+    toolActivatedByRun: !toolPreexisting && toolSelected,
+    repositorySelection: selected.length === requested.length ? 'repo-picker' : 'partial',
+    repositories: repositoryStates,
+    cleanupRequired: repositoryStates
+      .filter((item) => item.state === 'temporary-selected')
+      .map((item) => item.repository),
+    cleanup: {
+      attempted: false,
+      status: repositoryStates.some((item) => item.state === 'temporary-selected') ? 'pending' : 'not-needed',
+      cleaned: [],
+      removedTool: false,
+      skipped: repositoryStates
+        .filter((item) => item.state === 'preexisting')
+        .map((item) => ({ repository: item.repository, reason: 'preexisting' })),
+      errors: [],
+    },
+  });
+
+  try {
+    for (const repository of requested) {
+      const opened = await openGitHubConnector(page);
+      toolSelected = await isGitHubConnectorActive(page).catch(() => false) || toolSelected;
+      if (!opened) {
+        throw new Error('ChatGPT GitHub connector control was not found. Configure/connect GitHub in ChatGPT, then retry.');
+      }
+      if (!await hasFirstVisible(page, GITHUB_REPO_SEARCH_SELECTORS, 1500)) {
+        await closeGitHubConnectorPicker(page);
+        toolSelected = await isGitHubConnectorActive(page).catch(() => false) || toolSelected;
+        throw new Error('ChatGPT GitHub connector repository picker was not found. Tool-only GitHub selection is not enough for deterministic repo grounding.');
+      }
+      const result = await selectGitHubRepository(page, repository);
+      if (!result?.selected) {
+        await closeGitHubConnectorPicker(page);
+        throw new Error(`GitHub repository "${repository}" was not found in the ChatGPT connector. Check that it is indexed and visible in ChatGPT.`);
+      }
+      selected.push(repository);
+      repositoryStates.push(result);
+      toolSelected = true;
+      await closeGitHubConnectorPicker(page);
+    }
+  } catch (error) {
+    let partial = connectorState();
+    if (partial.cleanupRequired.length > 0 || partial.toolActivatedByRun) {
+      partial = await cleanupGitHubRepositorySelections(page, partial).catch((cleanupError) => ({
+        ...partial,
+        cleanup: {
+          ...partial.cleanup,
+          attempted: true,
+          status: 'warn',
+          errors: [
+            ...(partial.cleanup?.errors || []),
+            { error: cleanupError.message },
+          ],
+        },
+      }));
+    }
+    const selectedBeforeCleanup = partial.selected.slice();
+    const selectedForSubmittedPrompt = partial.repositories
+      .filter((item) => item.state === 'preexisting')
+      .map((item) => item.repository);
+    const cleanedBeforeSubmit = new Set((partial.cleanup?.cleaned || [])
+      .filter((item) => ['unselected', 'already-unselected'].includes(item.state))
+      .map((item) => item.repository));
+    const repositoriesForSubmittedPrompt = partial.repositories.map((item) => (
+      item.state === 'temporary-selected'
+        ? { ...item, selected: false, state: cleanedBeforeSubmit.has(item.repository) ? 'cleaned-before-submit' : 'cleanup-failed-before-submit' }
+        : item
+    ));
+    error.githubConnector = {
+      ...partial,
+      selected: selectedForSubmittedPrompt,
+      selectedBeforeCleanup,
+      repositories: repositoriesForSubmittedPrompt,
+      uiSelection: partial.selected.length > 0 ? 'partial' : 'unavailable',
+      error: error.message,
+      promptRequirement: 'sent',
+    };
+    throw error;
+  }
+
+  return connectorState();
+}
+
+export async function cleanupGitHubRepositorySelections(page, githubConnector = {}) {
+  const cleanupRequired = [...new Set([
+    ...(githubConnector.cleanupRequired || []),
+    ...((githubConnector.repositories || [])
+      .filter((item) => item.state === 'temporary-selected')
+      .map((item) => item.repository)),
+  ].filter(Boolean))];
+  const hasPreexistingRepository = (githubConnector.repositories || [])
+    .some((item) => item.state === 'preexisting');
+  const toolRemovalRequired = githubConnector.toolActivatedByRun && !hasPreexistingRepository;
+  const cleanupNeeded = cleanupRequired.length > 0 || toolRemovalRequired;
+
+  const next = {
+    ...githubConnector,
+    cleanup: {
+      attempted: cleanupNeeded,
+      status: cleanupNeeded ? 'ok' : 'not-needed',
+      cleaned: [],
+      removedTool: false,
+      skipped: (githubConnector.cleanup?.skipped || []).slice(),
+      errors: [],
+    },
   };
+
+  for (const repository of cleanupRequired) {
+    try {
+      if (!await openGitHubConnector(page)) {
+        throw new Error('ChatGPT GitHub connector control was not found during cleanup');
+      }
+
+      let row = await githubRepositoryRowOperation(page, repository, 'state');
+      if (!row.found) {
+        if (await searchGitHubRepository(page, repository)) {
+          await page.waitForTimeout(700);
+          row = await githubRepositoryRowOperation(page, repository, 'state');
+        }
+      }
+
+      if (!row.found) {
+        throw new Error(`GitHub repository "${repository}" was not found during cleanup`);
+      }
+      if (row.checked === false) {
+        next.cleanup.cleaned.push({ repository, state: 'already-unselected' });
+        await closeGitHubConnectorPicker(page);
+        continue;
+      }
+      if (row.checked !== true) {
+        throw new Error(`GitHub repository "${repository}" cleanup state could not be determined safely`);
+      }
+
+      await githubRepositoryRowOperation(page, repository, 'click');
+      await page.waitForTimeout(500);
+      const after = await githubRepositoryRowOperation(page, repository, 'state');
+      if (after.found && after.checked === false) {
+        next.cleanup.cleaned.push({ repository, state: 'unselected' });
+      } else {
+        throw new Error(`GitHub repository "${repository}" stayed checked after cleanup click`);
+      }
+      await closeGitHubConnectorPicker(page);
+    } catch (error) {
+      next.cleanup.status = 'warn';
+      next.cleanup.errors.push({ repository, error: error.message });
+      await closeGitHubConnectorPicker(page);
+    }
+  }
+
+  if (toolRemovalRequired) {
+    try {
+      if (await removeGitHubConnectorTool(page)) {
+        await page.waitForTimeout(500);
+        if (await isGitHubConnectorActive(page)) {
+          throw new Error('GitHub tool pill stayed active after cleanup removal');
+        }
+        next.cleanup.removedTool = true;
+      } else if (await isGitHubConnectorActive(page)) {
+        throw new Error('GitHub tool remove control was not found');
+      }
+    } catch (error) {
+      next.cleanup.status = 'warn';
+      next.cleanup.errors.push({ repository: null, error: error.message });
+    }
+  }
+
+  return next;
 }
 
 export async function findProjectUrl(page, projectName) {
@@ -802,12 +1296,20 @@ export async function submitPrompt(page, { prompt, attachmentPath, githubReposit
   try {
     githubConnector = await attachGitHubRepositories(page, githubRepositories);
   } catch (error) {
-    githubConnector = {
+    githubConnector = error.githubConnector || {
       requested: githubRepositories,
       selected: [],
       uiSelection: 'unavailable',
       error: error.message,
       promptRequirement: 'sent',
+      cleanup: {
+        attempted: false,
+        status: 'not-needed',
+        cleaned: [],
+        removedTool: false,
+        skipped: [],
+        errors: [],
+      },
     };
   }
   composer = await waitForComposer(page);

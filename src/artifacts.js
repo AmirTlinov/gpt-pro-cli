@@ -108,12 +108,18 @@ function receiptWarnings(data) {
   if (Array.isArray(meta.githubRepositories) && meta.githubRepositories.length > 0) {
     const connector = meta.githubConnector || {};
     const selected = new Set(connector.selected || []);
-    const promptScoped = connector.toolSelected === true
-      && ['prompt-scoped', 'mixed'].includes(connector.repositorySelection);
+    const cleanRepoStates = new Set((connector.repositories || [])
+      .filter((item) => item && item.selected === true && ['preexisting', 'temporary-selected'].includes(item.state))
+      .map((item) => item.repository));
     for (const repository of meta.githubRepositories) {
-      if (!selected.has(repository) && !promptScoped) warnings.push(`GitHub connector did not report selected repository: ${repository}`);
+      if (!selected.has(repository) || !cleanRepoStates.has(repository)) {
+        warnings.push(`GitHub connector did not report deterministic selected repository: ${repository}`);
+      }
     }
     if (connector.error) warnings.push(`GitHub connector UI selection failed: ${connector.error}`);
+    for (const item of connector.cleanup?.errors || []) {
+      warnings.push(`GitHub connector cleanup failed${item.repository ? ` for ${item.repository}` : ''}: ${item.error || 'unknown error'}`);
+    }
   }
   if (!meta.project) warnings.push('project is missing in metadata');
   if (!meta.sessionUrl) warnings.push('session URL is missing in metadata');

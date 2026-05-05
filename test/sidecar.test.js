@@ -144,7 +144,13 @@ fs.writeFileSync(path.join(fakeDir, 'receipt-' + count + '.json'), JSON.stringif
 
   const waited = await runSidecar(['wait', runDir, '--timeout', '5000'], { env });
   assert.equal(waited.code, 0, waited.stderr);
-  assert.match(waited.stdout, /== answer ==\nFIRST PASS CONTENT/);
+  assert.match(waited.stdout, /^DONE/m);
+  assert.match(waited.stdout, /^answer: .+answer-1\.md$/m);
+  assert.doesNotMatch(waited.stdout, /== answer ==/);
+
+  const waitedShown = await runSidecar(['wait', runDir, '--timeout', '5000', '--show'], { env });
+  assert.equal(waitedShown.code, 0, waitedShown.stderr);
+  assert.match(waitedShown.stdout, /== answer ==\nFIRST PASS CONTENT/);
 
   const flagship = await runSidecar([
     'flagship',

@@ -481,6 +481,7 @@ async function ask(argv) {
     `warnings: ${output.receipt?.warnings?.length || 0}`,
     `url: ${output.result.url}`,
   ].join('\n'));
+  if (status === 'WARN') process.exitCode = 10;
 }
 
 async function smoke(argv) {
@@ -554,6 +555,7 @@ async function archive(argv) {
     `warnings: ${result.manifest.warnings.length}`,
     ...result.manifest.warnings.slice(0, 5).map((warning) => `warning: ${warning}`),
   ].join('\n'));
+  if (status === 'WARN') process.exitCode = 10;
 }
 
 async function main() {

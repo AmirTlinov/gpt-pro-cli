@@ -164,7 +164,7 @@ test('message receipt surfaces hidden download failures as warnings', async () =
   assert.match(receipt.warnings.join('\n'), /report\.zip/);
 });
 
-test('message receipt accepts prompt-scoped GitHub tool selection without fake repo-picker certainty', async () => {
+test('message receipt warns when GitHub repo grounding is only prompt-scoped', async () => {
   const home = await tempHome();
   process.env.GPT_PRO_HOME = home;
   const messageDir = await nextMessageDir('github-prompt-scoped-session');
@@ -192,10 +192,54 @@ test('message receipt accepts prompt-scoped GitHub tool selection without fake r
   });
 
   const receipt = JSON.parse(await fs.readFile(result.path, 'utf8'));
-  assert.equal(receipt.status, 'ok');
+  assert.equal(receipt.status, 'warn');
   assert.equal(receipt.githubConnector.repositorySelection, 'prompt-scoped');
   assert.deepEqual(receipt.githubConnector.selected, []);
-  assert.equal(receipt.warnings.length, 0);
+  assert.match(receipt.warnings.join('\n'), /deterministic selected repository/);
+});
+
+test('message receipt accepts deterministic repo picker selection and surfaces cleanup failure', async () => {
+  const home = await tempHome();
+  process.env.GPT_PRO_HOME = home;
+  const messageDir = await nextMessageDir('github-picker-cleanup-session');
+
+  const result = await writeMessageArtifacts(messageDir, {
+    prompt: 'hello',
+    answer: 'world',
+    downloads: [],
+    meta: {
+      command: 'ask',
+      project: 'CLI_QUESTIONS',
+      sessionUrl: 'https://chatgpt.com/g/g-p-demo/c/github-picker-cleanup-session',
+      githubRepositories: ['AmirTlinov/gpt-pro-cli'],
+      githubConnector: {
+        requested: ['AmirTlinov/gpt-pro-cli'],
+        selected: ['AmirTlinov/gpt-pro-cli'],
+        toolSelected: true,
+        repositorySelection: 'repo-picker',
+        repositories: [{
+          repository: 'AmirTlinov/gpt-pro-cli',
+          selected: true,
+          state: 'temporary-selected',
+        }],
+        cleanup: {
+          attempted: true,
+          status: 'warn',
+          cleaned: [],
+          skipped: [],
+          errors: [{ repository: 'AmirTlinov/gpt-pro-cli', error: 'stayed checked' }],
+        },
+      },
+      downloads: [],
+      linkDownloads: [],
+      downloadErrors: [],
+      extractedFiles: [],
+    },
+  });
+
+  const receipt = JSON.parse(await fs.readFile(result.path, 'utf8'));
+  assert.equal(receipt.status, 'warn');
+  assert.match(receipt.warnings.join('\n'), /cleanup failed.*AmirTlinov\/gpt-pro-cli/);
 });
 
 test('archive includes project chats, project sessions, and manifest only', async () => {

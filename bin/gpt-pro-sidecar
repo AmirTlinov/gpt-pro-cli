@@ -10,11 +10,12 @@ Commands:
   gpt-pro-sidecar start [--label <name>] [--project CLI_QUESTIONS] [--github-repo owner/repo|auto] [--timeout <ms>]
   gpt-pro-sidecar flagship <run-dir> [--project CLI_QUESTIONS] [--github-repo owner/repo|auto] [--timeout <ms>]
   gpt-pro-sidecar status <run-dir>
-  gpt-pro-sidecar wait <run-dir> [--timeout <ms>]
+  gpt-pro-sidecar wait <run-dir> [--timeout <ms>] [--show]
   gpt-pro-sidecar show <run-dir>
 
 `start` reads the GPT-PRO prompt from stdin and returns immediately.
-`wait` blocks until the run has a receipt and then prints the result.
+`wait` blocks until the run has a receipt and then prints a compact result.
+Use `wait --show` or `show` when you want stdout/stderr plus the full answer body.
 `flagship` waits for an existing run and sends a final strengthening prompt to the same chat.
 USAGE
 }
@@ -454,11 +455,16 @@ wait_run() {
   local run_dir="${1:?missing run-dir}"
   shift || true
   local timeout_ms="${GPT_PRO_SIDECAR_WAIT_TIMEOUT_MS:-1200000}"
+  local show_result=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --timeout)
         timeout_ms="${2:?missing --timeout value}"
         shift 2
+        ;;
+      --show)
+        show_result=1
+        shift
         ;;
       *)
         echo "ERROR unknown wait option: $1" >&2
@@ -476,14 +482,18 @@ wait_run() {
   deadline=$((start_ms + timeout_ms))
   while true; do
     if [[ -f "$run_dir/exit_code" ]]; then
-      show "$run_dir"
       code="$(cat "$run_dir/exit_code")"
+      if [[ "$show_result" == "1" ]]; then
+        show "$run_dir"
+      else
+        status "$run_dir"
+      fi
       return "$code"
     fi
     pid=""
     [[ -f "$run_dir/pid" ]] && pid="$(cat "$run_dir/pid")"
     if [[ -z "$pid" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
-      show "$run_dir"
+      status "$run_dir"
       return 3
     fi
     now_ms="$(date +%s)000"

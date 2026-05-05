@@ -40,7 +40,7 @@ function fakeChatGptServer() {
           </div>
           <div id="github-menu" style="display:none">
             <input id="repo-search" placeholder="Поиск в репозиториях..." />
-            <button id="repo" style="display:none">AmirTlinov/gpt-pro-cli</button>
+            <button id="repo" role="menuitemcheckbox" aria-checked="false" style="display:none">AmirTlinov/gpt-pro-cli</button>
           </div>
           <div id="selected-repo"></div>
           <div id="prompt-textarea" contenteditable="true" role="textbox"></div>
@@ -69,7 +69,10 @@ function fakeChatGptServer() {
             }
           });
           document.querySelector('#repo').addEventListener('click', () => {
-            document.querySelector('#selected-repo').textContent = 'AmirTlinov/gpt-pro-cli';
+            const repo = document.querySelector('#repo');
+            const next = repo.getAttribute('aria-checked') === 'true' ? 'false' : 'true';
+            repo.setAttribute('aria-checked', next);
+            document.querySelector('#selected-repo').textContent = next === 'true' ? 'AmirTlinov/gpt-pro-cli' : '';
           });
           window.__gptProActiveGenerations = window.__gptProActiveGenerations || 0;
           document.querySelector('[data-testid="send-button"]').addEventListener('click', () => {
@@ -229,6 +232,9 @@ test('CLI ask talks through keeper and stop cleans runtime file', async (t) => {
     const groundedReceipt = JSON.parse(await fs.readFile(groundedReceiptPath, 'utf8'));
     assert.deepEqual(groundedReceipt.githubRepositories, ['AmirTlinov/gpt-pro-cli']);
     assert.deepEqual(groundedReceipt.githubConnector.selected, ['AmirTlinov/gpt-pro-cli']);
+    assert.equal(groundedReceipt.githubConnector.repositories[0].state, 'temporary-selected');
+    assert.equal(groundedReceipt.githubConnector.cleanup.status, 'ok');
+    assert.deepEqual(groundedReceipt.githubConnector.cleanup.cleaned, [{ repository: 'AmirTlinov/gpt-pro-cli', state: 'unselected' }]);
     const groundedPrompt = await fs.readFile(path.join(groundedReceipt.messageDir, 'prompt.md'), 'utf8');
     assert.match(groundedPrompt, /Repository grounding requirement:/);
     assert.match(groundedPrompt, /Use the ChatGPT GitHub connector/);
@@ -255,6 +261,7 @@ test('CLI ask talks through keeper and stop cleans runtime file', async (t) => {
     const autoReceipt = JSON.parse(await fs.readFile(autoReceiptPath, 'utf8'));
     assert.deepEqual(autoReceipt.githubRepositories, ['AmirTlinov/gpt-pro-cli']);
     assert.deepEqual(autoReceipt.githubConnector.selected, ['AmirTlinov/gpt-pro-cli']);
+    assert.equal(autoReceipt.githubConnector.cleanup.status, 'ok');
 
     const latest = await execFile(process.execPath, [
       cliPath,
