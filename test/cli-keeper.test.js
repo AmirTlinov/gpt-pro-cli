@@ -48,11 +48,10 @@ test('doctor defaults agent traffic to background browser mode', async () => {
   assert.match(stdout, /^browser-mode: background$/m);
 });
 
-test('macOS focus guard follows the latest non-Chrome app instead of activating a stale desktop', async () => {
+test('macOS focus guard hides the automated Chrome instead of activating a stale desktop', async () => {
   const source = await fs.readFile(path.resolve('src/keeper.js'), 'utf8');
-  assert.match(source, /set lastApp to item 1 of argv/);
-  assert.match(source, /set lastApp to frontApp/);
-  assert.match(source, /set lastPid to frontPid/);
+  assert.match(source, /set visible of frontProc to false/);
+  assert.doesNotMatch(source, /set frontmost of first application process/);
   assert.doesNotMatch(source, /tell application previousApp to activate/);
   assert.doesNotMatch(source, /restorePreviousAppIfChromeIsFrontmost/);
 });

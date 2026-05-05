@@ -55,6 +55,7 @@ let focusGuard = {
   active: false,
   previousApp: null,
   previousPid: null,
+  targetPid: null,
   pid: null,
   error: null,
 };
@@ -99,6 +100,7 @@ async function startFocusGuard() {
         active: false,
         previousApp: previousApp || null,
         previousPid: previousPid || null,
+        targetPid: null,
         pid: null,
         error: previousApp ? 'frontmost app is already Chrome' : 'frontmost app is unknown',
       };
@@ -106,28 +108,14 @@ async function startFocusGuard() {
     }
 
     const script = `
-on run argv
-  set lastApp to item 1 of argv
-  set lastPid to (item 2 of argv) as integer
+on run
   repeat
     try
       tell application "System Events"
         set frontProc to first application process whose frontmost is true
         set frontApp to name of frontProc
-        set frontPid to unix id of frontProc
         if (frontApp is "Google Chrome" or frontApp is "Chromium") then
-          if lastPid is not 0 then
-            try
-              set frontmost of first application process whose unix id is lastPid to true
-            on error
-              set visible of frontProc to false
-            end try
-          else
-            set visible of frontProc to false
-          end if
-        else
-          set lastApp to frontApp
-          set lastPid to frontPid
+          set visible of frontProc to false
         end if
       end tell
     end try
@@ -135,13 +123,14 @@ on run argv
   end repeat
 end run
 `;
-    const child = spawn('/usr/bin/osascript', ['-e', script, previousApp, String(previousPid || 0)], { stdio: 'ignore' });
+    const child = spawn('/usr/bin/osascript', ['-e', script], { stdio: 'ignore' });
     child.unref?.();
     focusGuard = {
       enabled: true,
       active: true,
       previousApp,
       previousPid: previousPid || null,
+      targetPid: null,
       pid: child.pid || null,
       error: null,
       process: child,
@@ -153,6 +142,7 @@ end run
           active: false,
           previousApp,
           previousPid: previousPid || null,
+          targetPid: null,
           pid: null,
           error: code || signal ? `focus guard exited code=${code ?? 'null'} signal=${signal ?? 'null'}` : null,
         };
@@ -165,6 +155,7 @@ end run
       active: false,
       previousApp: null,
       previousPid: null,
+      targetPid: null,
       pid: null,
       error: error.message,
     };
@@ -179,6 +170,7 @@ async function stopFocusGuard() {
     active: false,
     previousApp: focusGuard.previousApp,
     previousPid: focusGuard.previousPid,
+    targetPid: focusGuard.targetPid,
     pid: null,
     error: null,
   };
@@ -224,6 +216,7 @@ function focusGuardStatus() {
     previousApp: focusGuard.previousApp || null,
     previousPid: focusGuard.previousPid || null,
     pid: focusGuard.pid || null,
+    targetPid: focusGuard.targetPid || null,
     error: focusGuard.error || null,
   };
 }

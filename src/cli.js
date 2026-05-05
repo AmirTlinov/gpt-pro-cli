@@ -401,7 +401,7 @@ function formatKeeperStatus(status) {
   const backgroundLine = formatBackgroundWindowLine(status.backgroundWindow);
   if (backgroundLine) lines.push(backgroundLine);
   if (status.focusGuard) {
-    lines.push(`focus-guard: enabled=${Boolean(status.focusGuard.enabled)} active=${Boolean(status.focusGuard.active)} previous=${status.focusGuard.previousApp || 'none'}${status.focusGuard.error ? ` error=${compactLine(status.focusGuard.error, 120)}` : ''}`);
+    lines.push(`focus-guard: enabled=${Boolean(status.focusGuard.enabled)} active=${Boolean(status.focusGuard.active)} previous=${status.focusGuard.previousApp || 'none'} target=${status.focusGuard.targetPid || 'any-chrome'}${status.focusGuard.error ? ` error=${compactLine(status.focusGuard.error, 120)}` : ''}`);
   }
   if (task) {
     const elapsedMs = task.startedAt ? Date.now() - Date.parse(task.startedAt) : null;
