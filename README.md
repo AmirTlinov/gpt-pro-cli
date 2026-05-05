@@ -162,7 +162,9 @@ local storage root.
 
 The default browser mode is `headless`: agent asks use the persistent
 `~/gpt-pro/browser-profile` through Chrome's CDP path without creating a macOS GUI
-window. This is the only mode that can honestly avoid focus theft and Spaces
+window. On macOS the focus guard is also active for headless Chrome because the
+Chrome app process can still briefly claim focus even without a visible page. This
+is the only default mode that can honestly minimize focus theft and Spaces
 switching during normal agent work. Use `gpt-pro login` for the one intentional
 visible-login/recovery flow.
 

@@ -68,7 +68,7 @@ function shouldUseNoStartupWindow() {
 }
 
 function shouldUseFocusGuard() {
-  return mode === 'background'
+  return ['background', 'headless'].includes(mode)
     && process.platform === 'darwin'
     && appSettings.macosFocusGuard;
 }
