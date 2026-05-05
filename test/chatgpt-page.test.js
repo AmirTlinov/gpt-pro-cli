@@ -185,6 +185,59 @@ test('submitPrompt accepts new ChatGPT UI when generation starts before user pro
   await browser.close();
 });
 
+
+test('answer wait accepts a fresh repeated answer after the submitted prompt', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const page = await browser.newPage();
+  await page.setContent(`
+    <main>
+      <div data-message-author-role="assistant">OK</div>
+      <div data-message-author-role="user">repeat please</div>
+      <div data-message-author-role="assistant">OK</div>
+    </main>
+  `);
+
+  const answer = await waitForAnswerStable(page, 1200, {
+    prompt: 'repeat please',
+    previousAnswer: 'OK',
+    previousAssistantCount: 1,
+  });
+  assert.equal(answer, 'OK');
+  await browser.close();
+});
+
+test('answer wait fails closed instead of returning partial text while generation is active', async (t) => {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+  } catch (error) {
+    t.skip(`Playwright browser unavailable: ${error.message}`);
+    return;
+  }
+
+  const page = await browser.newPage();
+  await page.setContent(`
+    <main>
+      <div data-message-author-role="user">slow prompt</div>
+      <div data-message-author-role="assistant">PARTIAL_ANSWER_STILL_GENERATING</div>
+      <button data-testid="stop-button">Stop</button>
+    </main>
+  `);
+
+  await assert.rejects(
+    () => waitForAnswerStable(page, 300, { prompt: 'slow prompt' }),
+    /complete ChatGPT answer|partial answer was discarded/,
+  );
+  await browser.close();
+});
+
 test('answer wait ignores an already-stable previous assistant message', async (t) => {
   let browser;
   try {

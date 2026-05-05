@@ -8,6 +8,9 @@ import { paths } from './config.js';
 import { ensureDir, pathExists, readJson } from './fsx.js';
 
 const START_TIMEOUT_MS = 45_000;
+const LOCK_TIMEOUT_MS = 60_000;
+const LOCK_STALE_MS = 90_000;
+const LOCK_WRITE_GRACE_MS = 5_000;
 const execFile = promisify(execFileCallback);
 
 export function pidAlive(pid) {
@@ -28,6 +31,68 @@ export async function readRuntime() {
   }
 }
 
+
+function lockFilePath() {
+  return path.join(paths().runtimeDir, 'keeper.lock');
+}
+
+async function readLock(file) {
+  try {
+    return JSON.parse(await fsp.readFile(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+async function lockIsStale(file) {
+  const lock = await readLock(file);
+  if (!lock) {
+    const stat = await fsp.stat(file).catch(() => null);
+    return stat ? Date.now() - stat.mtimeMs > LOCK_WRITE_GRACE_MS : true;
+  }
+  if (!pidAlive(lock.pid)) return true;
+  const createdAt = Date.parse(lock.createdAt || '');
+  return Number.isFinite(createdAt) && Date.now() - createdAt > LOCK_STALE_MS;
+}
+
+async function acquireRuntimeLock() {
+  await ensureDir(paths().runtimeDir);
+  const file = lockFilePath();
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    let handle;
+    try {
+      handle = await fsp.open(file, 'wx', 0o600);
+      await handle.writeFile(JSON.stringify({
+        pid: process.pid,
+        createdAt: new Date().toISOString(),
+      }));
+      return async () => {
+        await handle?.close().catch(() => {});
+        await fsp.rm(file, { force: true }).catch(() => {});
+      };
+    } catch (error) {
+      await handle?.close().catch(() => {});
+      if (error?.code !== 'EEXIST') throw error;
+      if (await lockIsStale(file)) {
+        await fsp.rm(file, { force: true }).catch(() => {});
+        continue;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+  const lock = await readLock(file);
+  throw new Error(`Timed out waiting for keeper startup lock${lock?.pid ? ` held by pid=${lock.pid}` : ''}`);
+}
+
+async function withRuntimeLock(task) {
+  const release = await acquireRuntimeLock();
+  try {
+    return await task();
+  } finally {
+    await release();
+  }
+}
 export async function cleanupStaleRuntime() {
   const runtime = await readRuntime();
   if (!runtime) return { cleaned: false, reason: 'no runtime file' };
@@ -130,14 +195,20 @@ async function profileProcessPids(profileDir) {
 }
 
 async function cleanupProfileProcesses(profileDir) {
-  const pids = await profileProcessPids(profileDir);
-  for (const pid of pids) {
-    await terminatePid(pid);
+  const killed = new Set();
+  for (let round = 0; round < 5; round += 1) {
+    const pids = await profileProcessPids(profileDir);
+    if (pids.length === 0) break;
+    for (const pid of pids) {
+      killed.add(pid);
+      await terminatePid(pid);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
   }
-  return pids.length;
+  return killed.size;
 }
 
-export async function stopKeeper() {
+async function stopKeeperUnlocked() {
   const runtime = await readRuntime();
   if (!runtime) {
     const killedProfileProcesses = await cleanupProfileProcesses(paths().profileDir);
@@ -166,7 +237,12 @@ export async function stopKeeper() {
   return { stopped: true, reason: `keeper stopped${suffix}` };
 }
 
-export async function ensureKeeper({ mode } = {}) {
+export async function stopKeeper(options = {}) {
+  if (options.lock === false) return stopKeeperUnlocked();
+  return withRuntimeLock(() => stopKeeperUnlocked());
+}
+
+async function ensureKeeperUnlocked({ mode } = {}) {
   await ensureDir(paths().runtimeDir);
   await cleanupStaleRuntime();
   const desiredMode = mode || 'background';
@@ -174,7 +250,12 @@ export async function ensureKeeper({ mode } = {}) {
   const currentHealth = await health(current);
   if (currentHealth && current.mode === desiredMode) return current;
   if (currentHealth && current.mode !== desiredMode) {
-    await stopKeeper();
+    await stopKeeper({ lock: false });
+  }
+  if (!currentHealth && current && pidAlive(current.pid)) {
+    await stopKeeper({ lock: false });
+  } else if (!currentHealth) {
+    await cleanupProfileProcesses(paths().profileDir);
   }
 
   const token = crypto.randomBytes(24).toString('hex');
@@ -191,6 +272,10 @@ export async function ensureKeeper({ mode } = {}) {
   fs.closeSync(logFd);
   child.unref();
   return waitForKeeper(token);
+}
+
+export async function ensureKeeper({ mode } = {}) {
+  return withRuntimeLock(() => ensureKeeperUnlocked({ mode }));
 }
 
 export async function runtimeStatus() {

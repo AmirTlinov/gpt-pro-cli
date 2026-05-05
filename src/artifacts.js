@@ -20,17 +20,25 @@ export async function nextMessageDir(sessionSlug) {
   const base = path.join(paths().chatsDir, sanitizeSlug(sessionSlug));
   await ensureDir(base);
   const entries = await fs.readdir(base, { withFileTypes: true }).catch(() => []);
-  let max = 0;
+  let next = 1;
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const match = entry.name.match(/^message-(\d+)$/);
-    if (match) max = Math.max(max, Number.parseInt(match[1], 10));
+    if (match) next = Math.max(next, Number.parseInt(match[1], 10) + 1);
   }
-  const messageDir = path.join(base, `message-${max + 1}`);
-  await ensureDir(messageDir);
-  await ensureDir(path.join(messageDir, 'attachments'));
-  await ensureDir(path.join(messageDir, 'files'));
-  return messageDir;
+
+  while (true) {
+    const messageDir = path.join(base, `message-${next}`);
+    try {
+      await fs.mkdir(messageDir);
+      await ensureDir(path.join(messageDir, 'attachments'));
+      await ensureDir(path.join(messageDir, 'files'));
+      return messageDir;
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      next += 1;
+    }
+  }
 }
 
 export async function writeMessageArtifacts(messageDir, data) {
@@ -91,6 +99,12 @@ function receiptWarnings(data) {
   for (const item of meta.downloadErrors || []) {
     warnings.push(`download failed: ${item.label || item.url || 'download'}${item.error ? ` (${item.error.split('\n')[0]})` : ''}`);
   }
+  for (const item of meta.extractionErrors || []) {
+    warnings.push(`extract failed: ${item.label || 'downloaded archive'}${item.error ? ` (${item.error.split('\n')[0]})` : ''}`);
+  }
+  if (meta.requestedProject && !meta.project) {
+    warnings.push(`project membership was not proven for requested project: ${meta.requestedProject}`);
+  }
   if (Array.isArray(meta.githubRepositories) && meta.githubRepositories.length > 0) {
     const selected = new Set(meta.githubConnector?.selected || []);
     for (const repository of meta.githubRepositories) {
@@ -115,6 +129,7 @@ function receiptMarkdown(receipt) {
     `files: ${receipt.counts.files}`,
     `downloads: ${receipt.counts.downloads}`,
     `download_errors: ${receipt.counts.downloadErrors}`,
+    `extraction_errors: ${receipt.counts.extractionErrors}`,
     `extracted_files: ${receipt.counts.extractedFiles}`,
     '',
     '## Warnings',
@@ -147,6 +162,7 @@ async function writeMessageReceipt(messageDir, data) {
       downloads: Array.isArray(meta.downloads) ? meta.downloads.length : 0,
       linkDownloads: Array.isArray(meta.linkDownloads) ? meta.linkDownloads.length : 0,
       downloadErrors: Array.isArray(meta.downloadErrors) ? meta.downloadErrors.length : 0,
+      extractionErrors: Array.isArray(meta.extractionErrors) ? meta.extractionErrors.length : 0,
       extractedFiles: Array.isArray(meta.extractedFiles) ? meta.extractedFiles.length : 0,
     },
     warnings,

@@ -211,6 +211,26 @@ error_summary() {
   ' "$run_dir/stderr.txt"
 }
 
+
+result_exit_code() {
+  local stdout_file="${1:?missing stdout file}"
+  local code="${2:?missing exit code}"
+  if [[ "$code" != "0" ]]; then
+    printf '%s\n' "$code"
+    return 0
+  fi
+  if [[ -f "$stdout_file" ]] && grep -Eq '^WARN([[:space:]]|$)' "$stdout_file"; then
+    printf '10\n'
+    return 0
+  fi
+  local warnings
+  warnings="$(awk -F': ' '$1 == "warnings" {print $2; exit}' "$stdout_file" 2>/dev/null || true)"
+  if [[ "$warnings" =~ ^[0-9]+$ && "$warnings" -gt 0 ]]; then
+    printf '10\n'
+    return 0
+  fi
+  printf '0\n'
+}
 print_result_fields() {
   local run_dir="${1:?missing run-dir}"
   local answer receipt warnings url project files error
@@ -320,6 +340,7 @@ PROMPT
   fi
   local code=$?
   set -e
+  code="$(result_exit_code "$out_dir/stdout.txt" "$code")"
   printf '%s\n' "$code" > "$out_dir/exit_code"
   date -u +"%Y-%m-%dT%H:%M:%SZ" > "$out_dir/finished_at"
   cat <<OUT

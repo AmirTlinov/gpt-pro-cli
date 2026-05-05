@@ -275,6 +275,12 @@ async function resolveSessionOption(session, project) {
   return { session: resolved.url, resolved };
 }
 
+function projectProofSource(resolvedSession, result) {
+  if (result.project?.projectUrl) return 'project-ui';
+  if (resolvedSession.resolved?.url) return 'project-session-cache';
+  return '';
+}
+
 async function upsertSessionCache(project, session, projectUrl = null) {
   const cache = await readSessionCache(project);
   const existing = Array.isArray(cache?.sessions) ? cache.sessions : [];
@@ -359,6 +365,7 @@ async function runAsk(options) {
   const startedAt = new Date();
   const resolvedSession = await resolveSessionOption(options.session, options.project);
   const runtime = await ensureKeeper({ mode: settings().browserMode });
+  const requestTimeoutMs = options.timeoutMs + settings().downloadTimeoutMs + 15_000;
   const result = await keeperRequest(runtime, '/ask', {
     session: resolvedSession.session,
     projectName: options.project,
@@ -367,7 +374,7 @@ async function runAsk(options) {
     githubRepositories,
     downloadDir: pendingFiles,
     timeoutMs: options.timeoutMs,
-  }, options.timeoutMs + 10_000);
+  }, requestTimeoutMs);
 
   const sessionSlug = sessionSlugFromUrl(result.url, resolvedSession.session);
   const messageDir = await nextMessageDir(sessionSlug);
@@ -386,7 +393,19 @@ async function runAsk(options) {
     ...browserOnlyDownloads,
     ...savedLinkDownloads.map((download) => download.path),
   ];
-  const extractedFiles = await extractDownloadedArchives(finalFilesDir);
+  const extractionErrors = [];
+  let extractedFiles = [];
+  try {
+    extractedFiles = await extractDownloadedArchives(finalFilesDir);
+  } catch (error) {
+    extractionErrors.push({
+      label: 'downloaded zip extraction',
+      status: 'failed',
+      error: error.message,
+    });
+  }
+  const proofSource = projectProofSource(resolvedSession, result);
+  const provenProject = proofSource ? options.project : null;
   const artifactReceipt = await writeMessageArtifacts(messageDir, {
     prompt: sentPrompt,
     answer: result.answer || result.latestVisibleAnswer || '',
@@ -396,12 +415,15 @@ async function runAsk(options) {
       ...browserOnlyDownloads,
       ...linkDownloads,
       ...(result.downloadErrors || []),
+      ...extractionErrors,
     ],
     meta: {
       command: 'ask',
       requestedSession: options.session,
       resolvedSession: resolvedSession.resolved || null,
-      project: options.project,
+      project: provenProject,
+      requestedProject: options.project,
+      projectProofSource: proofSource || null,
       projectUrl: result.project?.projectUrl || null,
       projectCreated: result.project?.created || false,
       originalPrompt: options.prompt,
@@ -416,15 +438,18 @@ async function runAsk(options) {
       downloads: finalDownloads,
       linkDownloads,
       downloadErrors: result.downloadErrors || [],
+      extractionErrors,
       extractedFiles,
       browserMode: runtime.mode,
     },
   });
   await fs.rm(pendingDir, { recursive: true, force: true });
-  await upsertSessionCache(options.project, {
-    title: options.prompt.split('\n').find(Boolean)?.trim().slice(0, 80) || 'Untitled',
-    url: result.url,
-  }, result.project?.projectUrl || null).catch(() => {});
+  if (provenProject) {
+    await upsertSessionCache(options.project, {
+      title: options.prompt.split('\n').find(Boolean)?.trim().slice(0, 80) || 'Untitled',
+      url: result.url,
+    }, result.project?.projectUrl || null).catch(() => {});
+  }
 
   return {
     answerPath: path.join(messageDir, 'answer.md'),

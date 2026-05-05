@@ -21,6 +21,15 @@ function exitCodeFromClose(code, signal) {
   return 128 + (osConstants.signals?.[signal] || 1);
 }
 
+
+async function exitCodeFromResult(stdoutPath, code) {
+  if (code !== 0) return code;
+  const stdout = await fs.readFile(stdoutPath, 'utf8').catch(() => '');
+  if (/^WARN\b/m.test(stdout)) return 10;
+  const warnings = stdout.match(/^warnings: (\d+)$/m)?.[1];
+  if (warnings && Number.parseInt(warnings, 10) > 0) return 10;
+  return code;
+}
 async function append(file, text) {
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.appendFile(file, text);
@@ -66,6 +75,7 @@ async function runWorker(argv) {
       await stdout.close().catch(() => {});
       await stderr.close().catch(() => {});
     }
+    code = await exitCodeFromResult(stdoutPath, code);
   } catch (error) {
     code = code || 1;
     await append(stderrPath, `${error.stack || error.message}\n`).catch(() => {});

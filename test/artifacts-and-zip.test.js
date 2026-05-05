@@ -40,6 +40,19 @@ test('session slug and message directories are deterministic', async () => {
   assert.equal(path.basename(second), 'message-2');
 });
 
+test('message directory allocation is atomic under concurrent writers', async () => {
+  const home = await tempHome();
+  process.env.GPT_PRO_HOME = home;
+
+  const dirs = await Promise.all(Array.from({ length: 12 }, () => nextMessageDir('parallel-session')));
+  const names = dirs.map((dir) => path.basename(dir));
+  assert.equal(new Set(names).size, names.length);
+  assert.deepEqual(
+    names.sort((a, b) => Number(a.replace('message-', '')) - Number(b.replace('message-', ''))),
+    Array.from({ length: 12 }, (_, index) => `message-${index + 1}`),
+  );
+});
+
 test('directory attachments are zipped and safely extracted', async () => {
   const home = await tempHome();
   process.env.GPT_PRO_HOME = home;

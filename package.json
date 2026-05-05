@@ -1,6 +1,6 @@
 {
   "name": "gpt-pro-cli",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "Local CLI bridge for ChatGPT Pro web sessions.",
   "license": "MIT",
   "type": "module",

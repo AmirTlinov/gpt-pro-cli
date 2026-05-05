@@ -88,14 +88,15 @@ fs.writeFileSync(countFile, String(count));
 const answerPath = path.join(fakeDir, 'answer-' + count + '.md');
 fs.writeFileSync(answerPath, session === 'new' ? 'FIRST PASS CONTENT' : 'FLAGSHIP CONTENT');
 fs.appendFileSync(path.join(fakeDir, 'calls.jsonl'), JSON.stringify({ args, session, project, timeout, githubRepos, prompt, answerPath }) + '\\n');
-console.log('OK');
+const warn = process.env.GPT_PRO_FAKE_WARN === '1';
+console.log(warn ? 'WARN' : 'OK');
 console.log('answer: ' + answerPath);
 console.log('files: ' + path.join(fakeDir, 'files-' + count));
 console.log('receipt: ' + path.join(fakeDir, 'receipt-' + count + '.json'));
 console.log('project: ' + project);
-console.log('warnings: 0');
+console.log('warnings: ' + (warn ? '1' : '0'));
 console.log('url: https://chatgpt.com/c/fake-' + count);
-fs.writeFileSync(path.join(fakeDir, 'receipt-' + count + '.json'), JSON.stringify({ status: 'ok', warnings: [], files: [{ path: 'answer.md' }] }));
+fs.writeFileSync(path.join(fakeDir, 'receipt-' + count + '.json'), JSON.stringify({ status: warn ? 'warn' : 'ok', warnings: warn ? ['download failed'] : [], files: [{ path: 'answer.md' }] }));
 `, { mode: 0o755 });
 
   const env = {
@@ -194,6 +195,26 @@ fs.writeFileSync(path.join(fakeDir, 'receipt-' + count + '.json'), JSON.stringif
     .split('\n')
     .map((line) => JSON.parse(line));
   assert.equal(noPathCalls[0].prompt, 'No path prompt');
+
+  const warnFakeDir = path.join(temp, 'fake-warn');
+  await fs.mkdir(warnFakeDir, { recursive: true });
+  const warnEnv = {
+    ...env,
+    GPT_PRO_FAKE_DIR: warnFakeDir,
+    GPT_PRO_FAKE_WARN: '1',
+    GPT_PRO_SIDECAR_DIR: path.join(temp, 'runs-warn'),
+  };
+  const warnStarted = await runSidecar(['start', '--label', 'Warn Probe'], { env: warnEnv, input: 'Warn prompt' });
+  assert.equal(warnStarted.code, 0, warnStarted.stderr);
+  const warnRunDir = field(warnStarted.stdout, 'run');
+  assert.ok(warnRunDir);
+  await waitForFile(path.join(warnRunDir, 'exit_code'));
+  assert.equal((await fs.readFile(path.join(warnRunDir, 'exit_code'), 'utf8')).trim(), '10');
+  const warnWaited = await runSidecar(['wait', warnRunDir, '--timeout', '5000'], { env: warnEnv });
+  assert.equal(warnWaited.code, 10, warnWaited.stdout);
+  assert.match(warnWaited.stdout, /^DONE/m);
+  assert.match(warnWaited.stdout, /^exit: 10$/m);
+  assert.match(warnWaited.stdout, /^warnings: 1$/m);
 });
 
 test('gpt-pro-sidecar status fails closed for dead workers without receipts', async () => {

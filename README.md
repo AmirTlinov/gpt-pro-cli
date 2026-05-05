@@ -10,13 +10,13 @@ answer plus files on disk. It is a browser bridge, not an OpenAI API client.
 ## Install
 
 ```sh
-npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.13/gpt-pro-cli-0.1.13.tgz
+npm install -g https://github.com/AmirTlinov/gpt-pro-cli/releases/download/v0.1.14/gpt-pro-cli-0.1.14.tgz
 ```
 
 Or install the same release from the Git tag:
 
 ```sh
-npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.13
+npm install -g github:AmirTlinov/gpt-pro-cli#v0.1.14
 ```
 
 For local development:
@@ -64,9 +64,11 @@ turn exits. `wait` blocks until completion and prints status, stdout, stderr, th
 answer body, and a compact receipt summary, so agents do not need to poll and
 then manually `cat` files. `status` is fail-closed: a dead worker without
 `exit_code` is reported as `FAILED`, not as a forever-pending run, and completed
-runs include answer/receipt/url fields inline. `flagship` asks the same ChatGPT
-thread for a final strengthening pass, so agent workflows can use GPT PRO
-without turning the chat into manual copy/paste.
+runs include answer/receipt/url fields inline. Receipt warnings make sidecar
+runs exit non-zero, so agents do not accidentally treat missing downloads,
+unproven project grounding, or connector failures as clean success. `flagship`
+asks the same ChatGPT thread for a final strengthening pass, so agent workflows
+can use GPT PRO without turning the chat into manual copy/paste.
 
 ## GitHub Grounding
 
@@ -95,8 +97,11 @@ between runs. Message artifacts are stored as:
 
 Each message contains `prompt.md`, `answer.md`, `meta.json`, `receipt.json`,
 `receipt.md`, uploaded attachments, downloaded answer links/files, and extracted
-zip contents when present. Receipts include hashes, warning counts, and file
-counts so agents can verify local artifacts without trusting terminal output.
+zip contents when present. Receipts include hashes, warning counts, file counts,
+and extraction/download warnings so agents can verify local artifacts without
+trusting terminal output. Message directories are allocated atomically and the
+keeper serializes browser mutations, so concurrent agent asks do not mix prompts
+or overwrite `message-<n>` artifacts.
 
 `gpt-pro archive` writes portable zip snapshots for the selected ChatGPT project
 to:

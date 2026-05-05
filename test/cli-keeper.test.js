@@ -71,8 +71,11 @@ function fakeChatGptServer() {
           document.querySelector('#repo').addEventListener('click', () => {
             document.querySelector('#selected-repo').textContent = 'AmirTlinov/gpt-pro-cli';
           });
+          window.__gptProActiveGenerations = window.__gptProActiveGenerations || 0;
           document.querySelector('[data-testid="send-button"]').addEventListener('click', () => {
             const prompt = document.querySelector('#prompt-textarea').textContent;
+            const overlapped = window.__gptProActiveGenerations > 0;
+            window.__gptProActiveGenerations += 1;
             const user = document.createElement('div');
             user.setAttribute('data-message-author-role', 'user');
             user.textContent = prompt;
@@ -81,9 +84,10 @@ function fakeChatGptServer() {
               history.pushState({}, '', '${inProject ? `/g/${projectId}/c/fake-session` : '/c/fake-session'}');
               const assistant = document.createElement('div');
               assistant.setAttribute('data-message-author-role', 'assistant');
-              assistant.textContent = prompt.includes('proof.txt') ? '${smokeSentinel}' : 'CLI-E2E ' + prompt;
+              assistant.textContent = prompt.includes('proof.txt') ? '${smokeSentinel}' : (overlapped ? 'OVERLAP ' : 'CLI-E2E ') + prompt;
               document.body.appendChild(assistant);
-            }, 50);
+              window.__gptProActiveGenerations -= 1;
+            }, prompt.includes('concurrent-') ? 800 : 50);
           });
         </script>
       </body>
@@ -106,6 +110,63 @@ function fakeChatGptServer() {
     });
   });
 }
+
+
+test('concurrent CLI asks use one serialized keeper without mixed prompts', async (t) => {
+  if (!await pathExists('/Applications/Google Chrome.app')) {
+    t.skip('Google Chrome is not installed');
+    return;
+  }
+
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gpt-pro-concurrent-e2e-'));
+  const { server, url } = await fakeChatGptServer();
+  const env = {
+    ...process.env,
+    GPT_PRO_HOME: home,
+    GPT_PRO_CHATGPT_URL: url,
+    GPT_PRO_BROWSER_MODE: 'headless',
+    GPT_PRO_OPERATION_TIMEOUT_MS: '12000',
+    GPT_PRO_IDLE_MS: '60000',
+  };
+
+  const ask = (prompt) => execFile(process.execPath, [
+    cliPath,
+    'ask',
+    '--session',
+    'new',
+    '--timeout',
+    '12000',
+    '--',
+    prompt,
+  ], { env, timeout: 45_000 });
+
+  try {
+    const [alpha, beta] = await Promise.all([
+      ask('concurrent-alpha'),
+      ask('concurrent-beta'),
+    ]);
+
+    for (const result of [alpha, beta]) {
+      assert.match(result.stdout, /^OK/m);
+      assert.doesNotMatch(result.stdout, /OVERLAP/);
+      const answerPath = result.stdout.match(/^answer: (.+)$/m)?.[1];
+      const receiptPath = result.stdout.match(/^receipt: (.+)$/m)?.[1];
+      assert.ok(answerPath);
+      assert.ok(receiptPath);
+      assert.match(await fs.readFile(answerPath, 'utf8'), /CLI-E2E concurrent-(alpha|beta)/);
+      assert.doesNotMatch(await fs.readFile(answerPath, 'utf8'), /OVERLAP/);
+      assert.equal(JSON.parse(await fs.readFile(receiptPath, 'utf8')).status, 'ok');
+    }
+
+    const answerDirs = [alpha, beta]
+      .map((result) => result.stdout.match(/^answer: (.+)$/m)?.[1])
+      .map((answerPath) => path.dirname(answerPath));
+    assert.equal(new Set(answerDirs).size, 2);
+  } finally {
+    await execFile(process.execPath, [cliPath, 'stop'], { env, timeout: 10_000 }).catch(() => {});
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
 
 test('CLI ask talks through keeper and stop cleans runtime file', async (t) => {
   if (!await pathExists('/Applications/Google Chrome.app')) {

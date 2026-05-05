@@ -850,12 +850,24 @@ export async function waitForAnswerStable(page, timeoutMs, options = {}) {
   const deadline = Date.now() + timeoutMs;
   let last = '';
   let stableTicks = 0;
+  let lastGenerating = false;
+  const baselineAssistantCount = Number.isInteger(options.previousAssistantCount)
+    ? options.previousAssistantCount
+    : null;
   while (Date.now() < deadline) {
     const answer = options.prompt
       ? await extractLatestAnswerAfterPrompt(page, options.prompt)
       : await extractLatestAnswer(page);
     const generating = await isGenerating(page);
-    const isFresh = !options.previousAnswer || answer !== options.previousAnswer;
+    const assistantCount = options.prompt ? null : await assistantMessageCount(page).catch(() => null);
+    const isFresh = options.prompt
+      ? Boolean(answer)
+      : Boolean(answer) && (
+        !options.previousAnswer
+        || answer !== options.previousAnswer
+        || (Number.isInteger(assistantCount) && Number.isInteger(baselineAssistantCount) && assistantCount > baselineAssistantCount)
+      );
+    lastGenerating = generating;
     if (answer && isFresh && answer === last && !generating) {
       stableTicks += 1;
       if (stableTicks >= 3) return answer;
@@ -865,7 +877,10 @@ export async function waitForAnswerStable(page, timeoutMs, options = {}) {
     }
     await page.waitForTimeout(1000);
   }
-  if (last && last !== options.previousAnswer) return last;
+  if (last && !lastGenerating) return last;
+  if (last && lastGenerating) {
+    throw new Error('Timed out waiting for a complete ChatGPT answer; generation was still running, so the partial answer was discarded');
+  }
   throw new Error('Timed out waiting for a ChatGPT answer');
 }
 

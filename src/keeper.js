@@ -38,6 +38,25 @@ let chromeProcess;
 let activePage;
 let idleTimer;
 let server;
+let browserQueue = Promise.resolve();
+let browserQueueDepth = 0;
+
+async function runBrowserTask(task) {
+  browserQueueDepth += 1;
+  const previous = browserQueue;
+  let release;
+  browserQueue = new Promise((resolve) => {
+    release = resolve;
+  });
+  await previous.catch(() => {});
+  try {
+    return await task();
+  } finally {
+    browserQueueDepth = Math.max(0, browserQueueDepth - 1);
+    touchIdle();
+    release();
+  }
+}
 
 function browserLaunchOptions() {
   const options = {
@@ -173,6 +192,7 @@ async function handle(req, res) {
         pid: process.pid,
         mode,
         profileDir: rootPaths.profileDir,
+        queueDepth: browserQueueDepth,
       });
     }
 
@@ -185,100 +205,102 @@ async function handle(req, res) {
       return;
     }
 
-    const page = await browserPage();
+    if (req.url === '/login' || req.url === '/sessions' || req.url === '/ask') {
+      return await runBrowserTask(async () => {
+        const page = await browserPage();
 
-    if (req.url === '/login') {
-      await page.goto(appSettings.baseUrl, { waitUntil: 'domcontentloaded' });
-      await waitForLoggedIn(page, body.timeoutMs || appSettings.operationTimeoutMs);
-      return json(res, 200, { ok: true, url: page.url() });
-    }
-
-    if (req.url === '/sessions') {
-      await page.goto(appSettings.baseUrl, { waitUntil: 'domcontentloaded' });
-      await waitForLoggedIn(page, body.timeoutMs || 60_000, { failFastUnauth: true });
-      const project = body.projectName
-        ? await openOrCreateProject(page, {
-          projectName: body.projectName,
-          baseUrl: appSettings.baseUrl,
-          timeoutMs: body.timeoutMs || 60_000,
-        })
-        : null;
-      return json(res, 200, {
-        ok: true,
-        sessions: await scrapeSessions(page, project?.projectUrl),
-        url: page.url(),
-        project,
-      });
-    }
-
-    if (req.url === '/ask') {
-      const startedAt = Date.now();
-      const downloads = [];
-      const downloadSaves = [];
-      if (body.downloadDir) await ensureDir(body.downloadDir);
-      const onDownload = async (download) => {
-        const target = downloadTarget(body.downloadDir || rootPaths.runtimeDir, download.suggestedFilename());
-        const save = download.saveAs(target).then(() => downloads.push(target));
-        downloadSaves.push(save);
-        await save;
-      };
-      page.on('download', onDownload);
-
-      try {
-        let project = null;
-        if (body.session && /^https?:\/\//.test(body.session)) {
-          await page.goto(body.session, { waitUntil: 'domcontentloaded' });
-        } else if (body.projectName) {
-          project = await openOrCreateProject(page, {
-            projectName: body.projectName,
-            baseUrl: appSettings.baseUrl,
-            timeoutMs: body.timeoutMs || 60_000,
-            keepCurrent: body.session === 'current',
-          });
-        } else if (body.session !== 'current') {
+        if (req.url === '/login') {
           await page.goto(appSettings.baseUrl, { waitUntil: 'domcontentloaded' });
+          await waitForLoggedIn(page, body.timeoutMs || appSettings.operationTimeoutMs);
+          return json(res, 200, { ok: true, url: page.url() });
         }
-        await waitForLoggedIn(page, body.timeoutMs || 60_000, { failFastUnauth: true });
-        const previousAnswer = await extractLatestAnswer(page).catch(() => '');
-        const previousAssistantCount = await assistantMessageCount(page).catch(() => 0);
-        const promptSubmission = await submitPrompt(page, {
-          prompt: body.prompt,
-          attachmentPath: body.attachmentPath,
-          githubRepositories: body.githubRepositories || [],
-        });
-        const answer = await waitForAnswerStable(page, body.timeoutMs || appSettings.operationTimeoutMs, {
-          prompt: body.prompt,
-          previousAnswer,
-          previousAssistantCount,
-        });
-        await Promise.allSettled(downloadSaves);
-        const reasoning = await extractVisibleReasoning(page);
-        const answerDownloads = body.downloadDir
-          ? await downloadAnswerArtifacts(page, {
+
+        if (req.url === '/sessions') {
+          await page.goto(appSettings.baseUrl, { waitUntil: 'domcontentloaded' });
+          await waitForLoggedIn(page, body.timeoutMs || 60_000, { failFastUnauth: true });
+          const project = body.projectName
+            ? await openOrCreateProject(page, {
+              projectName: body.projectName,
+              baseUrl: appSettings.baseUrl,
+              timeoutMs: body.timeoutMs || 60_000,
+            })
+            : null;
+          return json(res, 200, {
+            ok: true,
+            sessions: await scrapeSessions(page, project?.projectUrl),
+            url: page.url(),
+            project,
+          });
+        }
+
+        const startedAt = Date.now();
+        const downloads = [];
+        const downloadSaves = [];
+        if (body.downloadDir) await ensureDir(body.downloadDir);
+        const onDownload = async (download) => {
+          const target = downloadTarget(body.downloadDir || rootPaths.runtimeDir, download.suggestedFilename());
+          const save = download.saveAs(target).then(() => downloads.push(target));
+          downloadSaves.push(save);
+          await save;
+        };
+        page.on('download', onDownload);
+
+        try {
+          let project = null;
+          if (body.session && /^https?:\/\//.test(body.session)) {
+            await page.goto(body.session, { waitUntil: 'domcontentloaded' });
+          } else if (body.projectName) {
+            project = await openOrCreateProject(page, {
+              projectName: body.projectName,
+              baseUrl: appSettings.baseUrl,
+              timeoutMs: body.timeoutMs || 60_000,
+              keepCurrent: body.session === 'current',
+            });
+          } else if (body.session !== 'current') {
+            await page.goto(appSettings.baseUrl, { waitUntil: 'domcontentloaded' });
+          }
+          await waitForLoggedIn(page, body.timeoutMs || 60_000, { failFastUnauth: true });
+          const previousAnswer = await extractLatestAnswer(page).catch(() => '');
+          const previousAssistantCount = await assistantMessageCount(page).catch(() => 0);
+          const promptSubmission = await submitPrompt(page, {
             prompt: body.prompt,
-            downloadDir: body.downloadDir,
-            timeoutMs: appSettings.downloadTimeoutMs,
-            maxBytes: appSettings.maxDownloadBytes,
-          })
-          : { links: [], downloads: [], errors: [] };
-        return json(res, 200, {
-          ok: true,
-          answer,
-          reasoning,
-          links: answerDownloads.links.map((link) => link.url),
-          downloads,
-          linkDownloads: answerDownloads.downloads,
-          downloadErrors: answerDownloads.errors,
-          url: page.url(),
-          project,
-          githubConnector: promptSubmission.githubConnector,
-          elapsedMs: Date.now() - startedAt,
-          title: await page.title().catch(() => ''),
-          latestVisibleAnswer: await extractLatestAnswer(page).catch(() => answer),
-        });
-      } finally {
-        page.off('download', onDownload);
-      }
+            attachmentPath: body.attachmentPath,
+            githubRepositories: body.githubRepositories || [],
+          });
+          const answer = await waitForAnswerStable(page, body.timeoutMs || appSettings.operationTimeoutMs, {
+            prompt: body.prompt,
+            previousAnswer,
+            previousAssistantCount,
+          });
+          await Promise.allSettled(downloadSaves);
+          const reasoning = await extractVisibleReasoning(page);
+          const answerDownloads = body.downloadDir
+            ? await downloadAnswerArtifacts(page, {
+              prompt: body.prompt,
+              downloadDir: body.downloadDir,
+              timeoutMs: appSettings.downloadTimeoutMs,
+              maxBytes: appSettings.maxDownloadBytes,
+            })
+            : { links: [], downloads: [], errors: [] };
+          return json(res, 200, {
+            ok: true,
+            answer,
+            reasoning,
+            links: answerDownloads.links.map((link) => link.url),
+            downloads,
+            linkDownloads: answerDownloads.downloads,
+            downloadErrors: answerDownloads.errors,
+            url: page.url(),
+            project,
+            githubConnector: promptSubmission.githubConnector,
+            elapsedMs: Date.now() - startedAt,
+            title: await page.title().catch(() => ''),
+            latestVisibleAnswer: await extractLatestAnswer(page).catch(() => answer),
+          });
+        } finally {
+          page.off('download', onDownload);
+        }
+      });
     }
 
     return json(res, 404, { ok: false, error: 'not found' });
